@@ -72,6 +72,15 @@
   .badge.flag{background:#7a4a12;color:#ffd58a}
 </style>
 <style>
+  body{background:#1e4f8c}
+  #kiosk{background:#1e4f8c;grid-template-columns:1fr 1fr;gap:0}
+  @media (orientation:portrait){#kiosk{grid-template-rows:46vh 54vh}}
+  .camWrap{display:flex;align-items:center;justify-content:center;padding:22px}
+  .cam{width:100%;max-width:640px;aspect-ratio:4/3;max-height:100%;border-radius:18px;box-shadow:0 10px 30px rgba(0,0,0,.35);border:3px solid rgba(255,255,255,.15)}
+  .side{border-left:0;background:#1e4f8c}
+  @media (orientation:portrait){.side{border-top:0}}
+  .who{background:#173f70} .act.ghost{border-color:rgba(255,255,255,.3);color:#dbe7f5}
+  .foot{color:#c9d9ec} #logo{color:#fff;border:1px solid rgba(255,255,255,.25)!important;border-radius:8px;padding:8px 12px}
   .sync{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--in);margin-right:6px;vertical-align:middle}
   .sync.off{background:var(--warn)} .sync.err{background:var(--miss)}
   #connect .body{max-width:480px;margin:0 auto;width:100%;justify-content:center}
@@ -94,12 +103,12 @@
 
 <!-- ============ KIOSK ============ -->
 <div id="kiosk" class="hidden">
-  <div class="cam">
+  <div class="camWrap"><div class="cam">
     <video id="video" autoplay muted playsinline></video>
     <canvas id="overlay"></canvas>
     <div class="site"><span id="siteName">Time Clock</span><span id="clock">--:--</span></div>
     <div class="status" id="status">Step up to the camera</div>
-  </div>
+  </div></div>
   <div class="side">
     <div class="who" id="who"><div class="name" id="whoName">Waiting…</div><div class="sub" id="whoSub">Look at the camera to punch</div></div>
     <div class="acts" id="acts">
@@ -377,6 +386,8 @@ $('btnSyncNow').onclick = async () => { await push(); await pull(); renderDevice
 $('btnDisconnect').onclick = async () => { if (supUser.role !== 'admin'){ toast('Only an admin can disconnect a tablet'); return; } if (!confirm('Sign this tablet out? Unsynced punches will be uploaded first.')) return; await push(); await sb.auth.signOut(); location.reload(); };
 
 // ================= boot =================
+function goFullscreen(){ if (window.matchMedia('(display-mode: fullscreen)').matches || window.matchMedia('(display-mode: standalone)').matches) return; const el = document.documentElement; if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen({ navigationUI: 'hide' }).catch(()=>{}); }
+document.addEventListener('pointerdown', goFullscreen, { passive: true });
 function tickClock(){ $('clock').textContent = fmtT(new Date()); setSync(); }
 async function startCamera(){ const v = $('video'); v.srcObject = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user', width:{ideal:1280}, height:{ideal:720}}, audio:false}); await new Promise(r => v.onloadedmetadata = r); await v.play(); }
 let profileErr = '';
