@@ -193,9 +193,13 @@ const Rules = (() => {
       if (p.type === 'in'){ if (open){ flags.push(`Two punch-ins in a row (${fmtTime(open,tz)}, ${fmtTime(t,tz)})`); } open = t; }
       else { if (!open){ flags.push(`Punch-out at ${fmtTime(t,tz)} with no punch-in`); continue; } segs.push([open, t]); open = null; }
     }
-    if (open){ const end = schedEnd && schedEnd > open ? schedEnd : new Date(open.getTime() + 8*3600e3); segs.push([open, end]); out.autoClosed = true; flags.push(`MISSED PUNCH-OUT, auto-closed at ${fmtTime(end,tz)}`); }
+    if (open){
+      const now = new Date(R.now || Date.now()); const closeAt = schedEnd && schedEnd > open ? schedEnd : new Date(open.getTime() + 8*3600e3);
+      if (dayKey(now, tz) === dateKey && now < closeAt){ segs.push([open, now]); out.stillIn = true; flags.push(`Still punched in (as of ${fmtTime(now,tz)})`); }
+      else { segs.push([open, closeAt]); out.autoClosed = true; flags.push(`MISSED PUNCH-OUT, auto-closed at ${fmtTime(closeAt,tz)}`); }
+    }
     if (!segs.length) return out;
-    out.punchIn = segs[0][0]; out.punchOut = out.autoClosed ? null : segs[segs.length-1][1];
+    out.punchIn = segs[0][0]; out.punchOut = (out.autoClosed || out.stillIn) ? null : segs[segs.length-1][1];
     // paid start/end
     let paidStart = segs[0][0]; if (schedStart){ if (paidStart < schedStart) paidStart = schedStart; else if ((paidStart - schedStart)/60000 > R.lateInFlagMin) flags.push(`Late in ${fmtTime(segs[0][0],tz)}`); }
     let lastEnd = segs[segs.length-1][1], paidEnd = lastEnd;
@@ -399,12 +403,15 @@ async function renderEmployees(){
 }
 async function assignEmp(e){
   const siteOpts = '<option value="">— unassigned —</option>' + mySites().map(s => `<option value="${s.id}" ${s.id === e.site_id ? 'selected' : ''}>${esc(s.name)}</option>`).join('');
-  await modal('Assign to site', `<div class="note"><b>${esc(e.name)}</b></div><div class="row"><label class="f">Site<select data-site>${siteOpts}</select></label><label class="f">Schedule<select data-sched></select></label></div>` + noteField(), async m => {
+  const done = modal('Assign to site', `<div class="note"><b>${esc(e.name)}</b></div><div class="row"><label class="f">Site<select data-site>${siteOpts}</select></label><label class="f">Schedule<select data-sched></select></label></div>` + noteField(), async m => {
     const note = needNote(m), sid = m.querySelector('[data-site]').value || null, scid = m.querySelector('[data-sched]').value || null;
+    if (sid && !scid && e.pay_type !== 'salary') throw new Error('Pick a schedule for this site.');
     const { error } = await sb.rpc('assign_employee', { p_emp: e.id, p_site: sid, p_schedule: scid }); if (error) throw new Error(error.message);
     await audit('employee_assigned', e.id, {site_id: e.site_id, schedule_id: e.schedule_id}, {site_id: sid, schedule_id: scid}, note); toast('Saved'); renderEmployees();
-  }).then(()=>{});
-  const m = document.querySelector('.modal'); if (!m) return; const ss = m.querySelector('[data-site]'), sc = m.querySelector('[data-sched]'); const fill = () => { fillSched(sc, ss.value); if (e.schedule_id) sc.value = e.schedule_id; }; fill(); ss.onchange = fill;
+  });
+  const m = document.querySelector('.modal:last-of-type'); const ss = m.querySelector('[data-site]'), sc = m.querySelector('[data-sched]');
+  const fill = () => { fillSched(sc, ss.value); if (e.schedule_id && ss.value === e.site_id) sc.value = e.schedule_id; else if (sc.options.length > 1) sc.selectedIndex = 1; }; fill(); ss.onchange = fill;
+  await done;
 }
 async function editEmp(e){
   await modal('Edit employee', `<div class="row"><label class="f">Name<input type="text" data-name value="${esc(e.name)}"></label><label class="f">Employee #<input type="text" data-code value="${esc(e.code||'')}"></label></div><div class="row"><label class="f">Pay type<select data-pay><option value="hourly" ${e.pay_type==='hourly'?'selected':''}>Hourly</option><option value="salary" ${e.pay_type==='salary'?'selected':''}>Salary</option></select></label><label class="f">Status<select data-active><option value="true" ${e.active?'selected':''}>Active</option><option value="false" ${!e.active?'selected':''}>Inactive (face data deleted)</option></select></label></div>` + noteField(), async m => {
