@@ -319,19 +319,19 @@ function renderDays(i){
   $('rvDays').innerHTML = `<tr><th>Day</th><th>Punches</th><th class="n">Lunch</th><th class="n">Worked</th><th class="n">Breaks</th><th class="n">Paid</th><th>Flags</th><th></th></tr>` + r.days.map((d, di) => {
     const dn = new Date(d.dateKey + 'T12:00:00Z').toLocaleDateString(undefined, {weekday:'short', month:'numeric', day:'numeric', timeZone:'UTC'});
     const ps = d.punches.map(p => `<span class="badge ${p.type}">${p.type.toUpperCase()} ${Rules.fmtTime(p.ts, tz)}${p.method === 'fallback' ? ' <span title="manual pick">✎</span>' : p.method === 'manual' ? ' ✎' : ''}</span>`).join(' ');
-    return `<tr class="dayrow"><td>${dn}</td><td>${ps || '<span class="note">—</span>'}</td><td class="n">${d.lunchMin || '-'}</td><td class="n">${d.worked || '-'}</td><td class="n">${d.breakMin ? d.breakMin + 'm' : '-'}</td><td class="n"><b>${d.paid || '-'}</b>${d.pto ? '<br><span class="note">+' + d.pto + ' PTO</span>' : ''}</td><td>${d.flags.map(f => `<span class="badge flag">${esc(f)}</span>`).join(' ')}</td><td style="white-space:nowrap"><button class="btn sm ghost" data-a="punches" data-d="${di}">Punches</button> <button class="btn sm ghost" data-a="time" data-d="${di}">Time</button></td></tr>`;
+    return `<tr class="dayrow"><td>${dn}</td><td>${ps || '<span class="note">—</span>'}</td><td class="n">${d.lunchMin || '-'}</td><td class="n">${d.worked || '-'}</td><td class="n">${d.breakMin ? d.breakMin + 'm' : '-'}</td><td class="n"><b>${d.paid || '-'}</b>${d.pto ? '<br><span class="note">+' + d.pto + ' PTO</span>' : ''}</td><td>${d.flags.map(f => `<span class="badge flag">${esc(f)}</span>`).join(' ')}</td><td style="white-space:nowrap"><button class="btn sm ghost" data-a="punches" data-d="${di}">Edit / delete punches</button> <button class="btn sm ghost" data-a="time" data-d="${di}">Time</button></td></tr>`;
   }).join('');
   $('rvDays').querySelectorAll('button[data-a]').forEach(b => b.onclick = () => (b.dataset.a === 'punches' ? editPunches : editTime)(r, +b.dataset.d));
 }
 async function editPunches(r, di){
   const d = r.days[di], tz = RV.site.timezone; const local = iso => { const p = Rules.parts(iso, tz); return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`; };
-  const html = `<div class="note">${r.emp.name} — ${d.dateKey} (${tz}). Change a time, clear it to remove the punch, or add one. Times are site local.</div>` +
-    d.punches.map((p, i) => `<div class="row"><label class="f">${p.type.toUpperCase()} <span class="note">${p.method}${p.flag ? ' · ' + esc(p.flag) : ''}</span><input type="datetime-local" data-p="${i}" value="${local(p.ts)}"></label></div>`).join('') +
+  const html = `<div class="note">${r.emp.name} — ${d.dateKey} (${tz}). Change a time, tick Delete to remove a punch, or add one. Times are site local.</div>` +
+    d.punches.map((p, i) => `<div class="row"><label class="f">${p.type.toUpperCase()} <span class="note">${p.method}${p.flag ? ' · ' + esc(p.flag) : ''}</span><input type="datetime-local" data-p="${i}" value="${local(p.ts)}"></label><label class="f" style="flex:0 0 auto;min-width:0;justify-content:flex-end"><span><input type="checkbox" data-del="${i}"> Delete</span></label></div>`).join('') +
     `<div class="row"><label class="f">Add punch<select data-newtype><option value="">— none —</option><option value="in">IN</option><option value="out">OUT</option></select></label><label class="f">at<input type="datetime-local" data-newts value="${d.dateKey}T07:00"></label></div>` + noteField();
   await modal('Edit punches', html, async m => {
     const note = needNote(m); const changes = [];
-    for (const inp of m.querySelectorAll('[data-p]')){ const p = d.punches[+inp.dataset.p]; const v = inp.value;
-      if (!v){ changes.push(sb.from('punches').delete().eq('id', p.id)); changes.push(audit('punch_removed', p.id, p, null, note)); }
+    for (const inp of m.querySelectorAll('[data-p]')){ const p = d.punches[+inp.dataset.p]; const v = inp.value; const del = m.querySelector(`[data-del="${inp.dataset.p}"]`).checked;
+      if (del || !v){ changes.push(sb.from('punches').delete().eq('id', p.id)); changes.push(audit('punch_removed', p.id, p, null, note)); }
       else { const ts = Rules.zoned(v.slice(0,10), v.slice(11,16), tz).toISOString(); if (ts !== p.ts){ changes.push(sb.from('punches').update({ ts, method: 'manual', reviewed: true }).eq('id', p.id)); changes.push(audit('punch_edited', p.id, {ts: p.ts}, {ts}, note)); } } }
     const nt = m.querySelector('[data-newtype]').value, nv = m.querySelector('[data-newts]').value;
     if (nt && nv){ const ts = Rules.zoned(nv.slice(0,10), nv.slice(11,16), tz).toISOString(); const id = 'm' + Date.now().toString(36); changes.push(sb.from('punches').insert({ id, employee_id: r.emp.id, site_id: RV.site.id, type: nt, ts, method: 'manual', flag: 'added by ' + me.display_name, reviewed: true })); changes.push(audit('punch_added', id, null, {type: nt, ts}, note)); }
