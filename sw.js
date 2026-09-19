@@ -1,5 +1,5 @@
 // Time Clock offline cache: serves the app from cache when the network is down, updates in the background.
-const CACHE = 'timeclock-v2';
+const CACHE = 'timeclock-v4';
 const FILES = ['./', './index.html', './manifest.json', './admin.html'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())); });

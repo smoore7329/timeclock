@@ -106,6 +106,7 @@
       <button class="act in hidden" id="btnIn">Punch In</button>
       <button class="act out hidden" id="btnOut">Punch Out</button>
       <button class="act ghost" id="btnNotMe">Not recognized? Pick your name</button>
+      <button class="act ghost hidden" id="btnClear">Done — next person</button>
     </div>
     <div class="spacer"></div>
     <div class="foot"><span id="footInfo"></span><button id="logo" style="background:none;border:0">AIME · Time Clock</button></div>
@@ -262,26 +263,26 @@ async function punch(type){
 function showDone(emp, type, rec){
   recognizing = false; $('who').className = 'who done'; $('whoName').textContent = emp.name;
   $('whoSub').innerHTML = (type === 'in' ? 'Punched <b>IN</b> at ' : 'Punched <b>OUT</b> at ') + fmtT(rec.ts) + (rec.flag ? '<br><span style="color:var(--warn)">Flagged for supervisor review</span>' : '');
-  $('btnIn').classList.add('hidden'); $('btnOut').classList.add('hidden'); $('btnNotMe').classList.add('hidden'); $('status').textContent = 'Thanks, ' + emp.name.split(' ')[0];
-  setTimeout(resetKiosk, 3500);
+  $('btnIn').classList.add('hidden'); $('btnOut').classList.add('hidden'); $('btnNotMe').classList.add('hidden'); $('btnClear').classList.add('hidden'); $('status').textContent = 'Thanks, ' + emp.name.split(' ')[0];
+  setTimeout(resetKiosk, 2500);
 }
 function resetKiosk(){
   current = null; currentMethod = 'face'; stable = {id:null,n:0}; recognizing = true; $('who').className = 'who';
   $('whoName').textContent = 'Waiting…'; $('whoSub').textContent = 'Look at the camera to punch';
-  $('btnIn').classList.add('hidden'); $('btnOut').classList.add('hidden'); $('btnNotMe').classList.remove('hidden'); $('status').textContent = 'Step up to the camera';
+  $('btnIn').classList.add('hidden'); $('btnOut').classList.add('hidden'); $('btnNotMe').classList.remove('hidden'); $('btnClear').classList.add('hidden'); $('status').textContent = 'Step up to the camera';
 }
 function showEmployee(emp, method){
   current = emp; currentMethod = method; const st = stateFor(emp); const w = $('who'); $('whoName').textContent = emp.name;
-  $('btnIn').classList.toggle('hidden', st.next !== 'in'); $('btnOut').classList.toggle('hidden', st.next !== 'out');
+  $('btnIn').classList.toggle('hidden', st.next !== 'in'); $('btnOut').classList.toggle('hidden', st.next !== 'out'); $('btnClear').classList.remove('hidden');
   const tail = method === 'fallback' ? ' · manual pick, photo will be reviewed' : '';
   if (st.next === 'locked'){ w.className = 'who lock';
     const tick = () => { if (current !== emp) return; const s = Math.max(0, Math.round((st.until - Date.now())/1000)); $('whoSub').innerHTML = `Punched out at ${fmtT(st.since.ts)}. You can punch back in at <b>${fmtT(st.until)}</b><br><span class="big">${Math.floor(s/60)}:${pad(s%60)}</span>`; if (s > 0) setTimeout(tick, 1000); else showEmployee(emp, method); }; tick();
   } else if (st.next === 'out'){ w.className = 'who out'; $('whoSub').textContent = 'Punched in at ' + fmtT(st.since.ts) + tail; }
   else { w.className = 'who in'; const sc = schedOf(emp); $('whoSub').textContent = (st.since ? 'Last out ' + fmtT(st.since.ts) + ' · ' : '') + 'Schedule ' + sc.name + ' ' + String(sc.start_time).slice(0,5) + '–' + String(sc.end_time).slice(0,5) + tail; }
   $('status').textContent = emp.name;
-  clearTimeout(idleTimer); idleTimer = setTimeout(() => { if (current === emp && recognizing) resetKiosk(); }, method === 'fallback' ? 30000 : 12000);
+  clearTimeout(idleTimer); idleTimer = setTimeout(() => { if (current === emp && recognizing) resetKiosk(); }, method === 'fallback' ? 30000 : (st.next === 'locked' ? 8000 : 12000));
 }
-$('btnIn').onclick = () => punch('in'); $('btnOut').onclick = () => punch('out');
+$('btnIn').onclick = () => punch('in'); $('btnOut').onclick = () => punch('out'); $('btnClear').onclick = () => { clearTimeout(idleTimer); resetKiosk(); };
 
 // ================= recognition loop =================
 async function loop(){
@@ -378,7 +379,9 @@ $('btnDisconnect').onclick = async () => { if (supUser.role !== 'admin'){ toast(
 // ================= boot =================
 function tickClock(){ $('clock').textContent = fmtT(new Date()); setSync(); }
 async function startCamera(){ const v = $('video'); v.srcObject = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user', width:{ideal:1280}, height:{ideal:720}}, audio:false}); await new Promise(r => v.onloadedmetadata = r); await v.play(); }
-async function loadProfile(){ const { data: { user } } = await sb.auth.getUser(); if (!user) return null; const { data } = await sb.from('profiles').select('*').eq('user_id', user.id).single(); return data; }
+let profileErr = '';
+async function loadProfile(){ profileErr = ''; const { data: { user }, error: ue } = await sb.auth.getUser(); if (ue) profileErr = 'auth: ' + ue.message; if (!user) return null;
+  const { data, error } = await sb.from('profiles').select('*').eq('user_id', user.id).maybeSingle(); if (error) profileErr = 'profile: ' + error.message + (error.details ? ' — ' + error.details : ''); else if (!data) profileErr = 'no profile row for user ' + user.id; else if (data.role !== 'device') profileErr = 'profile role is "' + data.role + '", not device'; return data; }
 async function runKiosk(){
   $('lsub').textContent = 'Loading site'; const cache = await DB.get('kv', 'cache');
   if (cache){ site = cache.v.site; schedules = cache.v.schedules; }
@@ -402,7 +405,7 @@ async function runKiosk(){
       $('cGo').onclick = async () => { $('cGo').disabled = true; $('cMsg').textContent = 'Connecting…';
         const { error } = await sb.auth.signInWithPassword({ email: $('cEmail').value.trim(), password: $('cPass').value });
         if (error){ $('cMsg').textContent = error.message; $('cGo').disabled = false; return; }
-        me = await loadProfile(); if (!me || me.role !== 'device'){ $('cMsg').textContent = 'That login is not a tablet account. Ask an admin to create one on the review page (Users → Add tablet).'; await sb.auth.signOut(); $('cGo').disabled = false; return; }
+        me = await loadProfile(); if (!me || me.role !== 'device'){ $('cMsg').textContent = 'Signed in, but this is not usable as a tablet account. ' + profileErr; await sb.auth.signOut(); $('cGo').disabled = false; return; }
         $('connect').classList.add('hidden'); $('loading').classList.remove('hidden'); await runKiosk(); };
       return; }
     await runKiosk();
