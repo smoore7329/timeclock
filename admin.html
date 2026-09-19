@@ -179,7 +179,7 @@ const Rules = (() => {
   // punches: this employee's punches on this local day, sorted by ts. sched: {start_time,end_time,grace_min}. site: {timezone, grace_min, lunch_flag_min, auto_deduct_min}
   // adj: {approved_late, adj_hours, pto_hours, note} or null
   function computeDay({dateKey, punches, sched, site, adj, rules}){
-    const tz = site.timezone, R = Object.assign({b1h:4, b1m:15, b2h:6.5, b2m:15, lateInFlagMin:5}, rules||{});
+    const tz = site.timezone, R = Object.assign({b1h:4, b1m:15, b2h:6.5, b2m:15, lateInFlagMin:5, lunchGraceMin:5}, rules||{});
     const flags = [], out = {dateKey, punchIn:null, punchOut:null, paidStart:null, paidEnd:null, lunchMin:0, worked:0, breakMin:0, adj:+((adj&&adj.adj_hours)||0), pto:+((adj&&adj.pto_hours)||0), paid:0, autoClosed:false, flags};
     if (!punches.length){ if (out.pto || out.adj){ out.paid = round2(out.adj); if (out.pto) flags.push(`PTO ${out.pto} hrs`); if (out.adj) flags.push(`Adj ${out.adj>0?'+':''}${out.adj} hrs`); } return out; }
     const schedStart = sched ? zoned(dateKey, String(sched.start_time).slice(0,5), tz) : null;
@@ -206,7 +206,8 @@ const Rules = (() => {
     }
     // gaps (lunch etc.)
     let gapMin = 0;
-    for (let i = 1; i < segs.length; i++){ const g = (segs[i][0] - segs[i-1][1])/60000; gapMin += g; if (g > (site.lunch_flag_min ?? 75)) flags.push(`Lunch ${Math.round(g)} min`); }
+    const lock = site.lockout_min ?? 60, lunchGrace = R.lunchGraceMin;
+    for (let i = 1; i < segs.length; i++){ let g = (segs[i][0] - segs[i-1][1])/60000; if (g > lock && g <= lock + lunchGrace) g = lock; gapMin += g; if (g > (site.lunch_flag_min ?? 75)) flags.push(`Lunch ${Math.round(g)} min`); }
     const elapsedH = (paidEnd - paidStart)/3600e3;
     if (segs.length === 1 && elapsedH > 5 && (site.auto_deduct_min ?? 60) > 0){ gapMin += site.auto_deduct_min ?? 60; flags.push(`No lunch punched, ${site.auto_deduct_min ?? 60} min deducted`); }
     out.paidStart = paidStart; out.paidEnd = paidEnd; out.lunchMin = Math.round(gapMin);
