@@ -261,8 +261,10 @@ const audit = (action, target, before, after, note) => sb.from('audit').insert({
 async function boot(){
   const { data: { session } } = await sb.auth.getSession();
   if (!session){ $('v-login').classList.remove('hidden'); return; }
-  const { data: prof } = await sb.from('profiles').select('*').eq('user_id', session.user.id).single();
-  if (!prof || !prof.active || prof.role === 'device'){ $('lMsg').textContent = 'This login has no access to the review page.'; await sb.auth.signOut(); $('v-login').classList.remove('hidden'); return; }
+  const { data: prof, error: perr } = await sb.from('profiles').select('*').eq('user_id', session.user.id).maybeSingle();
+  if (!prof || !prof.active || prof.role === 'device'){
+    const why = perr ? 'profile lookup failed: ' + perr.message : !prof ? 'no profile found for user ' + session.user.id + ' (' + (session.user.email||'') + ')' : !prof.active ? 'profile is disabled' : 'this is a tablet login, not a person';
+    $('lMsg').textContent = 'This login has no access to the review page — ' + why + '.'; await sb.auth.signOut(); $('v-login').classList.remove('hidden'); return; }
   me = prof; $('v-login').classList.add('hidden'); $('nav').classList.remove('hidden'); $('btnOut').classList.remove('hidden'); $('whoami').textContent = me.display_name + ' · ' + me.role;
   $('navUsers').classList.toggle('hidden', !isAdmin()); $('siteAddCard').classList.toggle('hidden', !isAdmin()); $('empAddCard').classList.toggle('hidden', !isAdmin());
   await loadRefs(); showView('review');
