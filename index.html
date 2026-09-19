@@ -72,15 +72,11 @@
   .badge.flag{background:#7a4a12;color:#ffd58a}
 </style>
 <style>
-  body{background:#1e4f8c}
-  #kiosk{background:#1e4f8c;grid-template-columns:1fr 1fr;gap:0}
-  @media (orientation:portrait){#kiosk{grid-template-rows:46vh 54vh}}
-  .camWrap{display:flex;align-items:center;justify-content:center;padding:22px}
-  .cam{width:100%;max-width:640px;aspect-ratio:4/3;max-height:100%;border-radius:18px;box-shadow:0 10px 30px rgba(0,0,0,.35);border:3px solid rgba(255,255,255,.15)}
-  .side{border-left:0;background:#1e4f8c}
-  @media (orientation:portrait){.side{border-top:0}}
-  .who{background:#173f70} .act.ghost{border-color:rgba(255,255,255,.3);color:#dbe7f5}
-  .foot{color:#c9d9ec} #logo{color:#fff;border:1px solid rgba(255,255,255,.25)!important;border-radius:8px;padding:8px 12px}
+  .camWrap{display:flex;align-items:center;justify-content:center;padding:60px;background:#1e4f8c}
+  .cam{width:100%;height:100%;border-radius:14px;overflow:hidden}
+  @media (orientation:portrait){.camWrap{padding:60px 60px 50px}}
+  body,#kiosk,.side{background:#1e4f8c} .side{border:0} .who{background:#173f70}
+  .act.ghost{border-color:rgba(255,255,255,.35);color:#e3edf8} .foot{color:#c9d9ec}
   .sync{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--in);margin-right:6px;vertical-align:middle}
   .sync.off{background:var(--warn)} .sync.err{background:var(--miss)}
   #connect .body{max-width:480px;margin:0 auto;width:100%;justify-content:center}
