@@ -57,7 +57,7 @@
 <header class="top">
   <span class="brand">AIME · Time Clock</span>
   <nav id="nav" class="hidden">
-    <button data-v="review" class="on">Review</button><button data-v="employees">Employees</button><button data-v="sites">Sites</button><button data-v="users" id="navUsers">Users</button>
+    <button data-v="review" class="on">Review</button><button data-v="employees">Employees</button><button data-v="sites">Sites</button><button data-v="users" id="navUsers">Users</button><button data-v="audit">Audit log</button>
   </nav>
   <span class="who" id="whoami"></span>
   <button class="btn ghost sm hidden" id="btnOut">Sign out</button>
@@ -103,6 +103,13 @@
   <div id="v-sites" class="view hidden">
     <div class="card hidden" id="siteAddCard"><h2>Add site</h2><div class="row"><label class="f">Name<input type="text" id="sName"></label><label class="f">Time zone<select id="sTz"><option>America/New_York</option><option>America/Chicago</option><option>America/Denver</option><option>America/Phoenix</option><option>America/Los_Angeles</option></select></label><button class="btn" id="sAdd">Add site</button></div></div>
     <div id="sitesList"></div>
+  </div>
+
+  <!-- AUDIT -->
+  <div id="v-audit" class="view hidden">
+    <div class="card"><div class="row"><label class="f">From<input type="date" id="auFrom"></label><label class="f">To<input type="date" id="auTo"></label><label class="f">Search<input type="text" id="auQ" placeholder="name, action, note"></label><button class="btn" id="auLoad">Load</button></div>
+      <div class="note" style="margin-top:6px">Every edit, approval, enrollment, and setting change, with who made it and the note they wrote. Values shown as before → after.</div></div>
+    <div class="card"><div class="tableWrap"><table id="auTable"></table></div></div>
   </div>
 
   <!-- USERS -->
@@ -273,7 +280,7 @@ const fillSched = (sel, siteId) => sel.innerHTML = '<option value="">— none �
 $('eSite').onchange = () => fillSched($('eSched'), $('eSite').value);
 document.querySelectorAll('#nav button').forEach(b => b.onclick = () => showView(b.dataset.v));
 function showView(v){ document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.v === v)); document.querySelectorAll('.view').forEach(x => x.classList.toggle('hidden', x.id !== 'v-' + v));
-  if (v === 'employees') renderEmployees(); if (v === 'sites') renderSites(); if (v === 'users') renderUsers(); }
+  if (v === 'employees') renderEmployees(); if (v === 'sites') renderSites(); if (v === 'users') renderUsers(); if (v === 'audit' && !$('auTable').innerHTML) loadAudit(); }
 
 // ========== REVIEW ==========
 let RV = null; // loaded week
@@ -426,6 +433,22 @@ function renderSites(){
     await sb.from('employees').update({ schedule_id: null }).eq('schedule_id', x.id); const { error } = await sb.from('schedules').delete().eq('id', x.id); if (error){ toast(error.message); return; } await audit('schedule_deleted', x.id, x, null, ''); await loadRefs(); renderSites(); });
 }
 $('sAdd').onclick = async () => { const name = $('sName').value.trim(); if (!name) return; const { error } = await sb.from('sites').insert({ name, timezone: $('sTz').value }); if (error){ toast(error.message); return; } $('sName').value = ''; await loadRefs(); renderSites(); };
+
+// ========== AUDIT ==========
+(function(){ const d = new Date(), iso = x => `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`; $('auTo').value = iso(d); d.setDate(d.getDate()-14); $('auFrom').value = iso(d); })();
+$('auLoad').onclick = loadAudit; $('auQ').oninput = () => renderAudit();
+let AU = [];
+async function loadAudit(){
+  const from = new Date($('auFrom').value + 'T00:00:00').toISOString(), to = new Date($('auTo').value + 'T23:59:59').toISOString();
+  const { data, error } = await sb.rpc('audit_log', { p_from: from, p_to: to, p_site: isAdmin() ? null : (mySites()[0]||{}).id }); if (error){ toast(error.message); return; } AU = data || []; renderAudit();
+}
+const friendly = a => ({punch_edited:'Punch time changed', punch_added:'Punch added', punch_removed:'Punch deleted', punch_reviewed:'Fallback punch confirmed', punch_reassigned:'Punch reassigned', day_adjustment:'Time approved / adjusted', employee_assigned:'Employee assigned', employee_added:'Employee added', employee_edited:'Employee edited', enroll:'Face enrolled', schedule_changed:'Schedule changed', schedule_added:'Schedule added', schedule_edited:'Schedule edited', schedule_deleted:'Schedule deleted', site_settings:'Site settings', user_created:'User created', user_edited:'User edited', user_deleted:'User deleted', user_sites:'User sites changed', pin_set:'PIN set', user_disabled:'User disabled', user_enabled:'User enabled', kiosk_supervisor_open:'Supervisor opened kiosk'}[a] || a);
+const fmtVal = v => { if (v == null) return ''; if (typeof v !== 'object') return String(v); const keep = ['ts','type','adj_hours','pto_hours','approved_late','site_id','schedule_id','name','code','pay_type','active','role','display_name','lockout_min','grace_min','shots','to']; return Object.entries(v).filter(([k]) => keep.includes(k)).map(([k,x]) => `${k}: ${k === 'ts' ? new Date(x).toLocaleString() : k === 'site_id' ? (siteById(x)||{}).name || x : k === 'schedule_id' || k === 'to' ? (schedById(x)||{}).name || x : x}`).join(', '); };
+function renderAudit(){
+  const q = $('auQ').value.trim().toLowerCase();
+  const list = AU.filter(r => !q || [r.actor_name, r.action, friendly(r.action), r.target_name, r.note].join(' ').toLowerCase().includes(q));
+  $('auTable').innerHTML = `<tr><th>When</th><th>Who</th><th>What</th><th>About</th><th>Change</th><th>Note</th></tr>` + list.map(r => `<tr><td style="white-space:nowrap">${new Date(r.ts).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</td><td>${esc(r.actor_name || r.device_id || '—')}</td><td>${esc(friendly(r.action))}</td><td>${esc(r.target_name || '')}</td><td class="note">${esc(fmtVal(r.before))}${r.before && r.after ? ' → ' : ''}${esc(fmtVal(r.after))}</td><td>${esc(r.note || '')}</td></tr>`).join('') || '<tr><td class="note">Nothing in this range.</td></tr>';
+}
 
 // ========== USERS (admin) ==========
 async function renderUsers(){
