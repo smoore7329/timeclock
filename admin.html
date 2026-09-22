@@ -191,7 +191,7 @@ const Rules = (() => {
     for (const p of punches){
       const t = new Date(p.ts);
       if (p.type === 'in'){ if (open){ flags.push(`Two punch-ins in a row (${fmtTime(open,tz)}, ${fmtTime(t,tz)})`); } open = t; }
-      else { if (!open){ flags.push(`Punch-out at ${fmtTime(t,tz)} with no punch-in`); continue; } segs.push([open, t]); open = null; }
+      else { if (!open){ const prev = segs.length ? segs[segs.length-1][1] : null; flags.push(prev ? `No punch-in after ${fmtTime(prev,tz)} — unpaid until ${fmtTime(t,tz)}` : `Punch-out at ${fmtTime(t,tz)} with no punch-in`); continue; } segs.push([open, t]); open = null; }
     }
     if (open){
       const now = new Date(R.now || Date.now()); const closeAt = schedEnd && schedEnd > open ? schedEnd : new Date(open.getTime() + 8*3600e3);
