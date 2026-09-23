@@ -151,6 +151,8 @@
       <label style="display:flex;gap:10px;align-items:flex-start;font-size:15px;color:var(--muted);line-height:1.4"><input type="checkbox" id="consent" style="width:26px;height:26px;margin-top:2px"> <span>The employee has been told this system stores a numeric signature of their face (not a photo) to identify them at the clock, that it stays with the company and is deleted when they leave, and they agree.</span></label>
       <button class="btn ok" id="btnCapture">Capture face (10 shots)</button>
       <div class="note" id="enMsg"></div>
+      <button class="btn danger" id="btnRemoveFace" style="margin-top:14px">Remove face data for this employee</button>
+      <div class="note">Deletes the stored face signature from the database and every tablet. The employee will have to pick their name (with a photo taken) until re-enrolled.</div>
     </div>
     <div id="t-roster" class="tab hidden">
       <div class="note">Employees assigned to this site. Change a schedule here; adding people to the site and everything else is done on the review page from your phone or laptop.</div>
@@ -351,7 +353,7 @@ function renderToday(){
   $('todayStats').innerHTML = `<div class="card"><h3>Punches today (this site)</h3><div style="font-size:32px;font-weight:800">${todays.length}</div></div><div class="card"><h3>Currently in</h3><div style="font-size:32px;font-weight:800">${inNow}</div></div>`;
   $('todayList').innerHTML = todays.length ? '<table><tr><th>Time</th><th>Employee</th><th></th><th></th></tr>' + todays.map(p => `<tr><td>${fmtT(p.ts)}</td><td>${(empById(p.employee_id)||{}).name || '—'}</td><td><span class="badge">${p.type.toUpperCase()}</span></td><td>${p.flag ? '<span class="badge flag">FLAG</span> ' + p.flag : ''}${p.synced ? '' : ' <span class="badge">not synced yet</span>'}</td></tr>`).join('') + '</table>' : '<div class="note">No punches yet today.</div>';
 }
-function renderEnrollSelect(){ const list = employees.filter(e => e.active && e.pay_type !== 'salary').sort((a,b) => a.name.localeCompare(b.name)); $('enEmp').innerHTML = list.map(e => `<option value="${e.id}">${e.name}${e.face_descs && e.face_descs.length ? ' ✓ enrolled' : ' — not enrolled'}</option>`).join('') || '<option value="">No employees assigned to this site</option>'; $('enMsg').textContent = ''; }
+function renderEnrollSelect(){ if (typeof disarmRemove === 'function' && removeArm) disarmRemove(); const list = employees.filter(e => e.active && e.pay_type !== 'salary').sort((a,b) => a.name.localeCompare(b.name)); $('enEmp').innerHTML = list.map(e => `<option value="${e.id}">${e.name}${e.face_descs && e.face_descs.length ? ' ✓ enrolled' : ' — not enrolled'}</option>`).join('') || '<option value="">No employees assigned to this site</option>'; $('enMsg').textContent = ''; }
 $('btnCapture').onclick = async () => {
   const emp = empById($('enEmp').value); if (!emp){ $('enMsg').textContent = 'Pick an employee first.'; return; }
   if (!$('consent').checked){ $('enMsg').textContent = 'Tick the consent box after telling the employee what is stored.'; return; }
@@ -370,6 +372,20 @@ $('btnCapture').onclick = async () => {
     else { emp.face_descs = descs; await DB.put('employees', emp); buildMatcher(); audit('enroll', emp.id, {shots: descs.length, by: supUser.user_id}); $('enMsg').textContent = emp.name + ' enrolled with ' + descs.length + ' shots.'; $('consent').checked = false; renderEnrollSelect(); }
   }
   $('btnCapture').disabled = false;
+};
+let removeArm = null;
+function disarmRemove(){ clearTimeout(removeArm); removeArm = null; $('btnRemoveFace').textContent = 'Remove face data for this employee'; }
+$('enEmp').addEventListener('change', disarmRemove);
+$('btnRemoveFace').onclick = async () => {
+  const emp = empById($('enEmp').value); if (!emp){ $('enMsg').textContent = 'Pick an employee first.'; return; }
+  if (!(emp.face_descs && emp.face_descs.length)){ $('enMsg').textContent = emp.name + ' has no face data stored.'; return; }
+  if (!navigator.onLine){ $('enMsg').textContent = 'Removing face data needs a connection so it is deleted from every tablet.'; return; }
+  if (!removeArm){ $('btnRemoveFace').textContent = 'Tap again to remove ' + emp.name + "'s face data"; removeArm = setTimeout(disarmRemove, 5000); return; }
+  disarmRemove(); $('btnRemoveFace').disabled = true;
+  const { error } = await sb.from('employees').update({ face_descs: null, consent_at: null }).eq('id', emp.id);
+  if (error){ $('enMsg').textContent = 'Could not remove: ' + error.message; }
+  else { emp.face_descs = null; await DB.put('employees', emp); buildMatcher(); audit('face_removed', emp.id, {by: supUser.user_id}); $('enMsg').textContent = emp.name + "'s face data was removed."; renderEnrollSelect(); }
+  $('btnRemoveFace').disabled = false;
 };
 function renderRoster(){
   const list = employees.filter(e => e.active).sort((a,b) => a.name.localeCompare(b.name));
