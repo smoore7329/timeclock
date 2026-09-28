@@ -43,6 +43,12 @@
   .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--dark);color:#fff;padding:12px 18px;border-radius:10px;z-index:30;max-width:90vw}
   .login{max-width:380px;margin:60px auto;display:flex;flex-direction:column;gap:12px}
   .dayrow td{background:#fafbfc}
+  tr.detail>td{padding:0 0 12px 18px;background:#e5eef5;border-bottom:2px solid #9fb6ca}
+  .detailBox{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px;margin-right:8px}
+  .detailBox table{font-size:13px} .detailBox th,.detailBox td{padding:6px}
+  .wtd{font-weight:700} .wtd.ot{color:#8a2d25}
+  .wkSum{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px;font-size:13px} .wkSum b{font-size:15px}
+  .caret{display:inline-block;width:14px;color:var(--muted)}
   .flagsList{display:flex;flex-direction:column;gap:8px}
   .flagItem{display:flex;gap:12px;align-items:flex-start;border:1px solid var(--line);border-radius:10px;padding:10px;background:#fff}
   .flagItem img{width:96px;border-radius:8px;transform:scaleX(-1)}
@@ -82,8 +88,7 @@
     </div></div>
     <div id="rvBody" class="hidden">
       <div class="kpi" id="rvKpi"></div>
-      <div class="card"><h2 id="rvTitle">Week</h2><div class="tableWrap"><table id="rvWeek"></table></div><div class="note" style="margin-top:8px">Tap a name to see the days. Regular hours include PTO; only worked time counts toward the 40.</div></div>
-      <div class="card hidden" id="rvDaysCard"><h2 id="rvDaysTitle"></h2><div class="tableWrap"><table id="rvDays"></table></div></div>
+      <div class="card"><h2 id="rvTitle">Week</h2><div class="tableWrap"><table id="rvWeek"></table></div><div class="note" style="margin-top:8px">Tap a name to open that person's punches right under their name (tap again to close). Regular hours include PTO; only worked time counts toward the 40.</div></div>
       <div class="card"><h2>Needs attention</h2><div class="flagsList" id="rvFlags"></div></div>
     </div>
   </div>
@@ -291,6 +296,7 @@ function showView(v){ document.querySelectorAll('#nav button').forEach(b => b.cl
 
 // ========== REVIEW ==========
 let RV = null; // loaded week
+let RV_OPEN = null; // employee id whose punches are expanded (stays open after edits)
 (function(){ const d = new Date(); $('rvDate').value = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; })();
 $('rvLoad').onclick = loadWeek;
 async function loadWeek(){
@@ -315,27 +321,34 @@ async function loadWeek(){
     return { emp: e, sched, days: dayRes, week: wk };
   }).filter(r => r.week.total > 0 || r.days.some(d => d.punches.length) || r.emp.site_id === site.id);
   RV = { site, ws, days, rows, punches };
-  renderWeek(); $('rvBody').classList.remove('hidden'); $('rvExport').disabled = false; $('rvDaysCard').classList.add('hidden');
+  if (RV_OPEN && !rows.some(r => r.emp.id === RV_OPEN)) RV_OPEN = null;
+  renderWeek(); $('rvBody').classList.remove('hidden'); $('rvExport').disabled = false;
 }
 function renderWeek(){
   const { site, ws, rows } = RV; const tot = k => Rules.round2(rows.reduce((a, r) => a + (r.week[k]||0), 0));
   $('rvTitle').textContent = `${site.name} — week of ${ws}`;
   $('rvKpi').innerHTML = `<div><b>${rows.length}</b><span>employees</span></div><div><b>${tot('paid')}</b><span>worked paid hrs</span></div><div><b>${tot('ot')}</b><span>OT hrs (1.5x)</span></div><div><b>${tot('pto')}</b><span>PTO hrs</span></div><div><b>${rows.reduce((a,r)=>a+r.week.flagged,0)}</b><span>flagged days</span></div><div><b>${RV.punches.filter(p => p.flag && !p.reviewed).length}</b><span>punches to review</span></div>`;
   $('rvWeek').innerHTML = `<tr><th>Employee</th><th>Schedule</th><th class="n">Days</th><th class="n">Worked</th><th class="n">Breaks</th><th class="n">Adj</th><th class="n">PTO</th><th class="n">Regular</th><th class="n">OT</th><th class="n">Total paid</th><th class="n">Flags</th></tr>` +
-    rows.map((r, i) => `<tr class="click" data-i="${i}"><td><b>${esc(r.emp.name)}</b><br><span class="note">#${esc(r.emp.code||'')}${r.emp.site_id !== site.id ? ' · now at another site' : ''}</span></td><td>${r.week.salary ? '<span class="badge">salary</span>' : esc((r.sched||{}).name || '—')}</td><td class="n">${r.week.days}</td><td class="n">${r.week.worked}</td><td class="n">${r.week.breaks}</td><td class="n">${r.week.adj||'-'}</td><td class="n">${r.week.pto||'-'}</td><td class="n">${r.week.reg}</td><td class="n">${r.week.ot ? '<b>'+r.week.ot+'</b>' : '-'}</td><td class="n">${r.week.total}</td><td class="n">${r.week.flagged ? '<span class="badge flag">'+r.week.flagged+'</span>' : ''}</td></tr>`).join('') +
+    rows.map((r, i) => `<tr class="click${RV_OPEN === r.emp.id ? ' sel' : ''}" data-i="${i}"><td><span class="caret">${RV_OPEN === r.emp.id ? '▾' : '▸'}</span><b>${esc(r.emp.name)}</b><br><span class="note">#${esc(r.emp.code||'')}${r.emp.site_id !== site.id ? ' · now at another site' : ''}</span></td><td>${r.week.salary ? '<span class="badge">salary</span>' : esc((r.sched||{}).name || '—')}</td><td class="n">${r.week.days}</td><td class="n">${r.week.worked}</td><td class="n">${r.week.breaks}</td><td class="n">${r.week.adj||'-'}</td><td class="n">${r.week.pto||'-'}</td><td class="n">${r.week.reg}</td><td class="n">${r.week.ot ? '<b>'+r.week.ot+'</b>' : '-'}</td><td class="n">${r.week.total}</td><td class="n">${r.week.flagged ? '<span class="badge flag">'+r.week.flagged+'</span>' : ''}</td></tr>` + (RV_OPEN === r.emp.id ? `<tr class="detail"><td colspan="11">${detailHtml(r)}</td></tr>` : '')).join('') +
     `<tr><th>Total</th><th></th><th class="n">${rows.reduce((a,r)=>a+r.week.days,0)}</th><th class="n">${tot('worked')}</th><th class="n">${tot('breaks')}</th><th class="n">${tot('adj')}</th><th class="n">${tot('pto')}</th><th class="n">${tot('reg')}</th><th class="n">${tot('ot')}</th><th class="n">${tot('total')}</th><th></th></tr>`;
-  $('rvWeek').querySelectorAll('tr.click').forEach(tr => tr.onclick = () => { $('rvWeek').querySelectorAll('tr').forEach(x => x.classList.remove('sel')); tr.classList.add('sel'); renderDays(+tr.dataset.i); });
+  $('rvWeek').querySelectorAll('tr.click').forEach(tr => tr.onclick = () => { const id = RV.rows[+tr.dataset.i].emp.id; RV_OPEN = RV_OPEN === id ? null : id; renderWeek(); });
+  const oi = RV.rows.findIndex(r => r.emp.id === RV_OPEN);
+  if (oi >= 0) $('rvWeek').querySelectorAll('tr.detail button[data-a]').forEach(b => b.onclick = e => { e.stopPropagation(); (b.dataset.a === 'punches' ? editPunches : editTime)(RV.rows[oi], +b.dataset.d); });
   renderFlags();
 }
-function renderDays(i){
-  const r = RV.rows[i], tz = RV.site.timezone; $('rvDaysCard').classList.remove('hidden'); $('rvDaysTitle').textContent = r.emp.name + (r.week.salary ? ' — salaried, 40 hrs at ' + RV.site.name : '');
-  if (r.week.salary){ $('rvDays').innerHTML = '<tr><td class="note">Salaried employees do not punch. Hours are fixed at 40 for the assigned site.</td></tr>'; return; }
-  $('rvDays').innerHTML = `<tr><th>Day</th><th>Punches</th><th class="n">Lunch</th><th class="n">Worked</th><th class="n">Breaks</th><th class="n">Paid</th><th>Flags</th><th></th></tr>` + r.days.map((d, di) => {
+function detailHtml(r){
+  const tz = RV.site.timezone, w = r.week;
+  if (w.salary) return `<div class="detailBox note">Salaried — does not punch. Fixed 40 hrs at ${esc(RV.site.name)}.</div>`;
+  const sum = `<div class="wkSum"><span>Worked <b>${w.worked}</b></span><span>+ Breaks <b>${w.breaks}</b></span>${w.adj ? `<span>+ Adj <b>${w.adj}</b></span>` : ''}<span>= Paid toward 40 <b>${w.paid}</b></span><span>Regular <b>${w.reg}</b></span><span>OT <b${w.ot ? ' style="color:#8a2d25"' : ''}>${w.ot || 0}</b></span>${w.pto ? `<span>PTO <b>${w.pto}</b></span>` : ''}<span>Total paid <b>${w.total}</b></span></div>`;
+  let run = 0;
+  const body = r.days.map((d, di) => {
+    run = Rules.round2(run + (d.paid || 0)); const ot = Rules.round2(Math.max(0, run - 40));
     const dn = new Date(d.dateKey + 'T12:00:00Z').toLocaleDateString(undefined, {weekday:'short', month:'numeric', day:'numeric', timeZone:'UTC'});
     const ps = d.punches.map(p => `<span class="badge ${p.type}">${p.type.toUpperCase()} ${Rules.fmtTime(p.ts, tz)}${p.method === 'fallback' ? ' <span title="manual pick">✎</span>' : p.method === 'manual' ? ' ✎' : ''}</span>`).join(' ');
-    return `<tr class="dayrow"><td>${dn}</td><td>${ps || '<span class="note">—</span>'}</td><td class="n">${d.lunchMin || '-'}</td><td class="n">${d.worked || '-'}</td><td class="n">${d.breakMin ? d.breakMin + 'm' : '-'}</td><td class="n"><b>${d.paid || '-'}</b>${d.pto ? '<br><span class="note">+' + d.pto + ' PTO</span>' : ''}</td><td>${d.flags.map(f => `<span class="badge flag">${esc(f)}</span>`).join(' ')}</td><td style="white-space:nowrap"><button class="btn sm ghost" data-a="punches" data-d="${di}">Edit / delete punches</button> <button class="btn sm ghost" data-a="time" data-d="${di}">Time</button></td></tr>`;
+    const has = d.punches.length || d.paid || d.pto;
+    return `<tr class="dayrow"><td>${dn}</td><td>${ps || '<span class="note">—</span>'}</td><td class="n">${d.lunchMin || '-'}</td><td class="n">${d.worked || '-'}</td><td class="n">${d.breakMin ? d.breakMin + 'm' : '-'}</td><td class="n"><b>${d.paid || '-'}</b>${d.pto ? '<br><span class="note">+' + d.pto + ' PTO</span>' : ''}</td><td class="n">${has ? `<span class="wtd${ot ? ' ot' : ''}">${run}</span>${ot ? `<br><span class="note">${ot} OT</span>` : ''}` : '<span class="note">' + run + '</span>'}</td><td>${d.flags.map(f => `<span class="badge flag">${esc(f)}</span>`).join(' ')}</td><td style="white-space:nowrap"><button class="btn sm ghost" data-a="punches" data-d="${di}">Edit / delete punches</button> <button class="btn sm ghost" data-a="time" data-d="${di}">Time</button></td></tr>`;
   }).join('');
-  $('rvDays').querySelectorAll('button[data-a]').forEach(b => b.onclick = () => (b.dataset.a === 'punches' ? editPunches : editTime)(r, +b.dataset.d));
+  return `<div class="detailBox">${sum}<div class="tableWrap"><table><tr><th>Day</th><th>Punches</th><th class="n">Lunch</th><th class="n">Worked</th><th class="n">Breaks</th><th class="n">Paid</th><th class="n">Week to date</th><th>Flags</th><th></th></tr>${body}</table></div></div>`;
 }
 async function editPunches(r, di){
   const d = r.days[di], tz = RV.site.timezone; const local = iso => { const p = Rules.parts(iso, tz); return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`; };
