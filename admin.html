@@ -333,7 +333,11 @@ function modal(title, fieldsHtml, onOk, okLabel='Save'){
 }
 const noteField = (label='Note (required)') => `<label class="f">${label}<textarea data-note placeholder="Why this change is being made"></textarea></label>`;
 const needNote = m => { const n = m.querySelector('[data-note]').value.trim(); if (!n) throw new Error('A note is required for every change.'); return n; };
-const audit = (action, target, before, after, note) => sb.from('audit').insert({ actor: me.user_id, action, target, before, after, note });
+const audit = async (action, target, before, after, note) => {
+  const r = await sb.from('audit').insert({ actor: me.user_id, action, target, before, after, note });
+  if (r.error) toast('Saved, but the audit log entry failed: ' + r.error.message, 7000);
+  return r;
+};
 
 // ---------- auth ----------
 async function boot(){
@@ -361,7 +365,7 @@ const fillSched = (sel, siteId) => sel.innerHTML = '<option value="">— none �
 $('eSite').onchange = () => fillSched($('eSched'), $('eSite').value);
 document.querySelectorAll('#nav button').forEach(b => b.onclick = () => showView(b.dataset.v));
 function showView(v){ document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.v === v)); document.querySelectorAll('.view').forEach(x => x.classList.toggle('hidden', x.id !== 'v-' + v));
-  if (v === 'employees') renderEmployees(); if (v === 'sites') renderSites(); if (v === 'users') renderUsers(); if (v === 'audit' && !$('auTable').innerHTML) loadAudit(); }
+  if (v === 'employees') renderEmployees(); if (v === 'sites') renderSites(); if (v === 'users') renderUsers(); if (v === 'audit') loadAudit(); }  // always refresh: other reviewers may have made changes since the tab was last opened
 
 // ========== REVIEW ==========
 let RV = null; // loaded week
@@ -634,7 +638,10 @@ $('auLoad').onclick = loadAudit; $('auQ').oninput = () => renderAudit();
 let AU = [];
 async function loadAudit(){
   const from = new Date($('auFrom').value + 'T00:00:00').toISOString(), to = new Date($('auTo').value + 'T23:59:59').toISOString();
-  const { data, error } = await sb.rpc('audit_log', { p_from: from, p_to: to, p_site: isAdmin() ? null : (mySites()[0]||{}).id }); if (error){ toast(error.message); return; } AU = data || []; renderAudit();
+  const { data, error } = await sb.rpc('audit_log', { p_from: from, p_to: to, p_site: isAdmin() ? null : (mySites()[0]||{}).id }); if (error){ toast(error.message); return; } AU = data || [];
+  if (!employeesAll.length){ const r = await sb.rpc('list_all_employees'); employeesAll = r.data || []; }
+  AU.forEach(r => { if (!r.target_name && r.target){ const m = String(r.target).match(/^(.+):(\d{4}-\d{2}-\d{2})$/); if (m){ const e = employeesAll.find(x => x.id === m[1]); r.target_name = (e ? e.name : m[1]) + ' — ' + m[2]; } } });
+  renderAudit();
 }
 const friendly = a => ({punch_edited:'Punch time changed', punch_added:'Punch added', punch_removed:'Punch deleted', punch_reviewed:'Fallback punch confirmed', punch_reassigned:'Punch reassigned', day_adjustment:'Time approved / adjusted', employee_assigned:'Employee assigned', employee_added:'Employee added', employee_edited:'Employee edited', enroll:'Face enrolled', face_removed:'Face data removed', schedule_changed:'Schedule changed', schedule_added:'Schedule added', schedule_edited:'Schedule edited', schedule_deleted:'Schedule deleted', site_settings:'Site settings', user_created:'User created', user_edited:'User edited', user_deleted:'User deleted', user_sites:'User sites changed', pin_set:'PIN set', user_disabled:'User disabled', user_enabled:'User enabled', kiosk_supervisor_open:'Supervisor opened kiosk'}[a] || a);
 const fmtVal = v => { if (v == null) return ''; if (typeof v !== 'object') return String(v); const keep = ['ts','type','adj_hours','pto_hours','approved_late','site_id','schedule_id','name','code','pay_type','active','role','display_name','lockout_min','grace_min','shots','to']; return Object.entries(v).filter(([k]) => keep.includes(k)).map(([k,x]) => `${k}: ${k === 'ts' ? new Date(x).toLocaleString() : k === 'site_id' ? (siteById(x)||{}).name || x : k === 'schedule_id' || k === 'to' ? (schedById(x)||{}).name || x : x}`).join(', '); };
