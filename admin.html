@@ -505,6 +505,8 @@ function buildTimesheet(wb, RV, who){
   const TYPES = ['Payroll Hours', 'Regular Hours', 'Weekly OT', 'PTO / Holiday'];
   let r0 = 8;
   const people = [...rows].sort((a, b) => a.emp.name.localeCompare(b.emp.name));
+  // cached results go with every formula so totals show in Excel's Protected View (it does not recalculate until Enable Editing)
+  const GT = [0, 0, 0, 0];
   people.forEach(r => {
     const sp = tsSplit(r);
     TYPES.forEach((t, k) => {
@@ -522,8 +524,9 @@ function buildTimesheet(wb, RV, who){
         if (sp[i].pto) c.fill = fill(sp[i].hol ? TS.FILL.holiday : TS.FILL.off);
         else if (!tot && TS.REST_DAYS.includes(i)) c.fill = fill(TS.FILL.rest);
       });
-      const k1 = row.getCell('K'); k1.value = { formula: `SUM(D${R}:J${R})` }; k1.numFmt = TS.HM; k1.font = { bold: true }; k1.alignment = { horizontal: 'right' };
-      const l1 = row.getCell('L'); l1.value = { formula: `K${R}*24` }; l1.numFmt = TS.DEC; l1.alignment = { horizontal: 'right' }; if (k === 0) l1.font = { bold: true };
+      const wk = sp.reduce((a, x) => a + (k === 0 ? x.reg + x.ot + x.pto : [x.reg, x.ot, x.pto][k - 1]), 0) / 1440; GT[k] += wk;
+      const k1 = row.getCell('K'); k1.value = { formula: `SUM(D${R}:J${R})`, result: wk }; k1.numFmt = TS.HM; k1.font = { bold: true }; k1.alignment = { horizontal: 'right' };
+      const l1 = row.getCell('L'); l1.value = { formula: `K${R}*24`, result: Rules.round2(wk * 24) }; l1.numFmt = TS.DEC; l1.alignment = { horizontal: 'right' }; if (k === 0) l1.font = { bold: true };
       for (let n = 1; n <= 14; n++) row.getCell(n).border = grid;
     });
     r0 += 4;
@@ -534,8 +537,10 @@ function buildTimesheet(wb, RV, who){
     const R = r0 + k, row = sh.getRow(R);
     if (k === 0){ row.getCell(1).value = `TOTAL — ${people.length} employees`; }
     row.getCell(3).value = t;
-    DC.concat(['K']).forEach(col => { const c = row.getCell(col); c.value = { formula: `SUMIF($C$8:$C$${last},"${t}",${col}$8:${col}$${last})` }; c.numFmt = TS.HM; c.alignment = { horizontal: 'right' }; });
-    const l1 = row.getCell('L'); l1.value = { formula: `K${R}*24` }; l1.numFmt = TS.DEC; l1.alignment = { horizontal: 'right' };
+    DC.concat(['K']).forEach((col, i) => { const c = row.getCell(col);
+      const v = col === 'K' ? GT[k] : people.reduce((a, r) => { const x = tsSplit(r)[i]; return a + (k === 0 ? x.reg + x.ot + x.pto : [x.reg, x.ot, x.pto][k - 1]); }, 0) / 1440;
+      c.value = { formula: `SUMIF($C$8:$C$${last},"${t}",${col}$8:${col}$${last})`, result: v }; c.numFmt = TS.HM; c.alignment = { horizontal: 'right' }; });
+    const l1 = row.getCell('L'); l1.value = { formula: `K${R}*24`, result: Rules.round2(GT[k] * 24) }; l1.numFmt = TS.DEC; l1.alignment = { horizontal: 'right' };
     for (let n = 1; n <= 14; n++){ const c = row.getCell(n); c.font = { bold: true }; c.fill = fill(TS.FILL.head); c.border = grid; }
   });
   sh.pageSetup = { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, printTitlesRow: '6:7', margins: { left: .3, right: .3, top: .4, bottom: .4, header: .2, footer: .2 } };
