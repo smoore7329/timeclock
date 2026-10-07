@@ -227,15 +227,34 @@ const Rules = (() => {
   function addDays(dateKey, n){ const [y,m,d] = dateKey.split('-').map(Number); const t = new Date(Date.UTC(y, m-1, d + n)); return `${t.getUTCFullYear()}-${pad(t.getUTCMonth()+1)}-${pad(t.getUTCDate())}`; }
   function weekStartOf(dateKey){ const [y,m,d] = dateKey.split('-').map(Number); const dow = (new Date(Date.UTC(y, m-1, d)).getUTCDay() + 6) % 7; return addDays(dateKey, -dow); }
   const round2 = x => Math.round(x * 100) / 100;
+  const crossesMidnight = sched => !!sched && String(sched.end_time).slice(0,5) <= String(sched.start_time).slice(0,5);
+  // Scheduled start/end as instants for a given work date. A schedule whose end is at or before its start ends the next calendar day (night shift).
+  function schedWindow(dateKey, sched, tz){
+    if (!sched) return {start:null, end:null};
+    const start = zoned(dateKey, String(sched.start_time).slice(0,5), tz);
+    const end = zoned(crossesMidnight(sched) ? addDays(dateKey, 1) : dateKey, String(sched.end_time).slice(0,5), tz);
+    return {start, end};
+  }
+  // Work date a punch belongs to: the scheduled shift whose start is within 4 h before / 20 h after the punch (so a 3:30 AM punch-out
+  // after a 7 PM start lands on the day the shift started). Without a schedule it is simply the local calendar day.
+  const WD_BEFORE_H = 4, WD_AFTER_H = 20;
+  function workDate(ts, sched, tz){
+    const dk = dayKey(ts, tz); if (!sched) return dk;
+    const t = new Date(ts).getTime();
+    for (const cand of [addDays(dk, -1), dk, addDays(dk, 1)]){
+      const s = zoned(cand, String(sched.start_time).slice(0,5), tz).getTime();
+      if (t >= s - WD_BEFORE_H*3600e3 && t < s + WD_AFTER_H*3600e3) return cand;
+    }
+    return dk;
+  }
 
-  // punches: this employee's punches on this local day, sorted by ts. sched: {start_time,end_time,grace_min}. site: {timezone, grace_min, lunch_flag_min, auto_deduct_min}
+  // punches: this employee's punches on this work date, sorted by ts. sched: {start_time,end_time,grace_min}. site: {timezone, grace_min, lunch_flag_min, auto_deduct_min}
   // adj: {approved_late, adj_hours, pto_hours, note} or null
   function computeDay({dateKey, punches, sched, site, adj, rules}){
     const tz = site.timezone, R = Object.assign({b1h:4, b1m:15, b2h:6.5, b2m:15, lateInFlagMin:5, lunchGraceMin:5}, rules||{});
     const flags = [], out = {dateKey, punchIn:null, punchOut:null, paidStart:null, paidEnd:null, lunchMin:0, worked:0, breakMin:0, adj:+((adj&&adj.adj_hours)||0), pto:+((adj&&adj.pto_hours)||0), paid:0, autoClosed:false, flags};
     if (!punches.length){ if (out.pto || out.adj){ out.paid = round2(out.adj); if (out.pto) flags.push(`PTO ${out.pto} hrs`); if (out.adj) flags.push(`Adj ${out.adj>0?'+':''}${out.adj} hrs`); } return out; }
-    const schedStart = sched ? zoned(dateKey, String(sched.start_time).slice(0,5), tz) : null;
-    const schedEnd = sched ? zoned(dateKey, String(sched.end_time).slice(0,5), tz) : null;
+    const { start: schedStart, end: schedEnd } = schedWindow(dateKey, sched, tz);
     const grace = (sched && sched.grace_min != null) ? sched.grace_min : (site.grace_min ?? 15);
     if (!sched) flags.push('NO SCHEDULE ASSIGNED');
     // pair up
@@ -247,7 +266,7 @@ const Rules = (() => {
     }
     if (open){
       const now = new Date(R.now || Date.now()); const closeAt = schedEnd && schedEnd > open ? schedEnd : new Date(open.getTime() + 8*3600e3);
-      if (dayKey(now, tz) === dateKey && now < closeAt){ segs.push([open, now]); out.stillIn = true; flags.push(`Still punched in (as of ${fmtTime(now,tz)})`); }
+      if (now < closeAt){ segs.push([open, now]); out.stillIn = true; flags.push(`Still punched in (as of ${fmtTime(now,tz)})`); }
       else { segs.push([open, closeAt]); out.autoClosed = true; flags.push(`MISSED PUNCH-OUT, auto-closed at ${fmtTime(closeAt,tz)}`); }
     }
     if (!segs.length) return out;
@@ -273,6 +292,9 @@ const Rules = (() => {
     out.breakMin = (worked > R.b1h ? R.b1m : 0) + (worked > R.b2h ? R.b2m : 0);
     if (out.adj) flags.push(`Adj ${out.adj>0?'+':''}${out.adj} hrs${adj.note ? ' — ' + adj.note : ''}`);
     if (out.pto) flags.push(`PTO ${out.pto} hrs`);
+    // guaranteed paid hours (per schedule, e.g. short special-project shifts paid as a full 8): top up worked+breaks to the guarantee; counts toward OT like worked time
+    const guar = +((sched && sched.min_paid_hours) || 0);
+    if (guar > 0){ const base = worked + out.breakMin/60; if (base < guar){ out.guar = round2(guar - base); out.adj = round2(out.adj + out.guar); flags.push(`Topped up to ${guar} hrs (guaranteed)`); } }
     out.paid = round2(worked + out.breakMin/60 + out.adj);
     return out;
   }
@@ -283,7 +305,7 @@ const Rules = (() => {
     const paid = round2(worked + breaks + adj), reg = round2(Math.min(paid, otAfter) + pto), ot = round2(Math.max(0, paid - otAfter));
     return {days: days.filter(d => d.paid > 0).length, worked, breaks, adj, pto, paid, reg, ot, total: round2(paid + pto), otEquiv: round2(reg + ot*otx), flagged: days.filter(d => d.flags.length).length};
   }
-  return {parts, dayKey, zoned, fmtTime, addDays, weekStartOf, computeDay, computeWeek, round2};
+  return {parts, dayKey, zoned, fmtTime, addDays, weekStartOf, computeDay, computeWeek, round2, workDate, schedWindow, crossesMidnight};
 })();
 if (typeof module !== 'undefined') module.exports = Rules;
 </script>
@@ -362,7 +384,8 @@ async function loadWeek(){
   const people = [...emps, ...more].sort((a,b) => a.name.localeCompare(b.name));
   const rows = people.map(e => {
     const sched = schedById(e.schedule_id);
-    const dayRes = days.map(dk => { const ps = punches.filter(p => p.employee_id === e.id && Rules.dayKey(p.ts, site.timezone) === dk); const adj = (adjs||[]).find(a => a.employee_id === e.id && a.work_date === dk) || null;
+    const mine = punches.filter(p => p.employee_id === e.id).map(p => Object.assign({}, p, { work_date: Rules.workDate(p.ts, sched, site.timezone) }));
+    const dayRes = days.map(dk => { const ps = mine.filter(p => p.work_date === dk); const adj = (adjs||[]).find(a => a.employee_id === e.id && a.work_date === dk) || null;
       const r = Rules.computeDay({dateKey: dk, punches: ps, sched: e.pay_type === 'salary' ? sched : sched, site, adj}); r.punches = ps; r.adjRow = adj; return r; });
     const wk = e.pay_type === 'salary' ? {days:0, worked:0, breaks:0, adj:0, pto:0, paid:0, reg:40, ot:0, total:40, otEquiv:40, flagged:0, salary:true} : Rules.computeWeek(dayRes);
     return { emp: e, sched, days: dayRes, week: wk };
@@ -394,7 +417,7 @@ function detailHtml(r){
   const body = r.days.map((d, di) => {
     run = Rules.round2(run + (d.paid || 0)); const ot = Rules.round2(Math.max(0, run - 40));
     const dn = new Date(d.dateKey + 'T12:00:00Z').toLocaleDateString(undefined, {weekday:'short', month:'numeric', day:'numeric', timeZone:'UTC'});
-    const ps = d.punches.map(p => `<span class="badge ${p.type}">${p.type.toUpperCase()} ${Rules.fmtTime(p.ts, tz)}${p.method === 'fallback' ? ' <span title="manual pick">✎</span>' : p.method === 'manual' ? ' ✎' : ''}</span>`).join(' ');
+    const ps = d.punches.map(p => `<span class="badge ${p.type}">${p.type.toUpperCase()} ${Rules.fmtTime(p.ts, tz)}${Rules.dayKey(p.ts, tz) !== d.dateKey ? ' <small title="next calendar day">+1</small>' : ''}${p.method === 'fallback' ? ' <span title="manual pick">✎</span>' : p.method === 'manual' ? ' ✎' : ''}</span>`).join(' ');
     const has = d.punches.length || d.paid || d.pto;
     return `<tr class="dayrow"><td>${dn}</td><td>${ps || '<span class="note">—</span>'}</td><td class="n">${d.lunchMin || '-'}</td><td class="n">${d.worked || '-'}</td><td class="n">${d.breakMin ? d.breakMin + 'm' : '-'}</td><td class="n"><b>${d.paid || '-'}</b>${d.pto ? '<br><span class="note">+' + d.pto + ' PTO</span>' : ''}</td><td class="n">${has ? `<span class="wtd${ot ? ' ot' : ''}">${run}</span>${ot ? `<br><span class="note">${ot} OT</span>` : ''}` : '<span class="note">' + run + '</span>'}</td><td>${d.flags.map(f => `<span class="badge flag">${esc(f)}</span>`).join(' ')}</td><td style="white-space:nowrap"><button class="btn sm ghost" data-a="punches" data-d="${di}">Edit / delete punches</button> <button class="btn sm ghost" data-a="time" data-d="${di}">Edit / approve extra time</button></td></tr>`;
   }).join('');
@@ -402,9 +425,10 @@ function detailHtml(r){
 }
 async function editPunches(r, di){
   const d = r.days[di], tz = RV.site.timezone; const local = iso => { const p = Rules.parts(iso, tz); return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`; };
-  const html = `<div class="note">${r.emp.name} — ${d.dateKey} (${tz}). Change a time, tick Delete to remove a punch, or add one. Times are site local.</div>` +
+  const night = Rules.crossesMidnight(r.sched);
+  const html = `<div class="note">${r.emp.name} — ${d.dateKey} (${tz}). Change a time, tick Delete to remove a punch, or add one. Times are site local.${night ? ' Night shift: punches after midnight belong to this work date — use the next calendar date for them.' : ''}</div>` +
     d.punches.map((p, i) => `<div class="row"><label class="f">${p.type.toUpperCase()} <span class="note">${p.method}${p.flag ? ' · ' + esc(p.flag) : ''}</span><input type="datetime-local" data-p="${i}" value="${local(p.ts)}"></label><label class="f" style="flex:0 0 auto;min-width:0;justify-content:flex-end"><span><input type="checkbox" data-del="${i}"> Delete</span></label></div>`).join('') +
-    `<div class="row"><label class="f">Add punch<select data-newtype><option value="">— none —</option><option value="in">IN</option><option value="out">OUT</option></select></label><label class="f">at<input type="datetime-local" data-newts value="${d.dateKey}T07:00"></label></div>` + noteField();
+    `<div class="row"><label class="f">Add punch<select data-newtype><option value="">— none —</option><option value="in">IN</option><option value="out">OUT</option></select></label><label class="f">at<input type="datetime-local" data-newts value="${d.dateKey}T${r.sched ? String(r.sched.start_time).slice(0,5) : '07:00'}"></label></div>` + noteField();
   await modal('Edit punches', html, async m => {
     const note = needNote(m); const changes = [];
     for (const inp of m.querySelectorAll('[data-p]')){ const p = d.punches[+inp.dataset.p]; const v = inp.value; const del = m.querySelector(`[data-del="${inp.dataset.p}"]`).checked;
@@ -530,8 +554,8 @@ $('rvExport').onclick = async () => {
   const daily = [['Employee','Emp #','Date','Day','Schedule','Punch In','Punch Out','Paid Start','Paid End','Lunch (min)','Hours Worked','Break Min Added','Adj Hours','PTO Hours','Paid Hours (worked)','Flags']];
   rows.filter(r => !r.week.salary).forEach(r => r.days.forEach(d => { if (!d.punches.length && !d.pto && !d.adj) return; const dn = new Date(d.dateKey + 'T12:00:00Z').toLocaleDateString('en-US', {weekday:'short', timeZone:'UTC'});
     daily.push([r.emp.name, r.emp.code, d.dateKey, dn, (r.sched||{}).name || '', d.punchIn ? Rules.fmtTime(d.punchIn, tz) : '', d.punchOut ? Rules.fmtTime(d.punchOut, tz) : (d.autoClosed ? 'auto' : ''), d.paidStart ? Rules.fmtTime(d.paidStart, tz) : '', d.paidEnd ? Rules.fmtTime(d.paidEnd, tz) : '', d.lunchMin, d.worked, d.breakMin, d.adj, d.pto, d.paid, d.flags.join('; ')]); }));
-  const pun = [['Employee','Emp #','Date','Time','Type','Method','Flag','Reviewed','Device','Timestamp (UTC)']];
-  RV.punches.forEach(p => { const e = rows.find(r => r.emp.id === p.employee_id); pun.push([e ? e.emp.name : p.employee_id, e ? e.emp.code : '', Rules.dayKey(p.ts, tz), Rules.fmtTime(p.ts, tz), p.type, p.method, p.flag || '', p.reviewed ? 'Y' : '', p.device_id || '', p.ts]); });
+  const pun = [['Employee','Emp #','Work date','Date','Time','Type','Method','Flag','Reviewed','Device','Timestamp (UTC)']];
+  RV.punches.forEach(p => { const e = rows.find(r => r.emp.id === p.employee_id); pun.push([e ? e.emp.name : p.employee_id, e ? e.emp.code : '', Rules.workDate(p.ts, e ? e.sched : null, tz), Rules.dayKey(p.ts, tz), Rules.fmtTime(p.ts, tz), p.type, p.method, p.flag || '', p.reviewed ? 'Y' : '', p.device_id || '', p.ts]); });
   const wb = new ExcelJS.Workbook(); wb.creator = 'AIME Time Clock'; wb.calcProperties.fullCalcOnLoad = true;
   buildTimesheet(wb, RV, me && me.display_name);
   addTable(wb, 'Weekly', weekly); addTable(wb, 'Daily', daily); addTable(wb, 'Punches', pun);
@@ -585,15 +609,15 @@ $('eAdd').onclick = async () => {
 function renderSites(){
   $('sitesList').innerHTML = mySites().map(s => `<div class="card"><h2>${esc(s.name)} <span class="note">${s.timezone}</span></h2>
     <div class="row"><label class="f">Lockout after punch-out (min)<input type="number" data-k="lockout_min" data-s="${s.id}" value="${s.lockout_min}"></label><label class="f">Grace after scheduled end (min)<input type="number" data-k="grace_min" data-s="${s.id}" value="${s.grace_min}"></label><label class="f">Flag lunches over (min)<input type="number" data-k="lunch_flag_min" data-s="${s.id}" value="${s.lunch_flag_min}"></label><label class="f">Deduct if no lunch punched (min)<input type="number" data-k="auto_deduct_min" data-s="${s.id}" value="${s.auto_deduct_min}"></label>${isAdmin() ? `<label class="f">Time zone<select data-k="timezone" data-s="${s.id}">${['America/New_York','America/Chicago','America/Denver','America/Phoenix','America/Los_Angeles'].map(z => `<option ${z===s.timezone?'selected':''}>${z}</option>`).join('')}</select></label>` : ''}<button class="btn" data-savesite="${s.id}">Save</button></div>
-    <h3 style="margin-top:14px">Schedules</h3><div class="tableWrap"><table><tr><th>Name</th><th>Start</th><th>End</th><th>Grace</th><th></th></tr>${schedules.filter(x => x.site_id === s.id).map(x => `<tr><td>${esc(x.name)}</td><td>${String(x.start_time).slice(0,5)}</td><td>${String(x.end_time).slice(0,5)}</td><td>${x.grace_min ?? 'site default'}</td><td><button class="btn sm ghost" data-editsched="${x.id}">Edit</button> <button class="btn sm ghost" data-delsched="${x.id}">Delete</button></td></tr>`).join('')}</table></div>
+    <h3 style="margin-top:14px">Schedules</h3><div class="tableWrap"><table><tr><th>Name</th><th>Start</th><th>End</th><th>Grace</th><th>Guaranteed hrs</th><th></th></tr>${schedules.filter(x => x.site_id === s.id).map(x => `<tr><td>${esc(x.name)}</td><td>${String(x.start_time).slice(0,5)}</td><td>${String(x.end_time).slice(0,5)}${Rules.crossesMidnight(x) ? ' <span class="badge" title="ends the next day">night</span>' : ''}</td><td>${x.grace_min ?? 'site default'}</td><td>${x.min_paid_hours ? x.min_paid_hours : '—'}</td><td><button class="btn sm ghost" data-editsched="${x.id}">Edit</button> <button class="btn sm ghost" data-delsched="${x.id}">Delete</button></td></tr>`).join('')}</table></div>
     <div class="row" style="margin-top:8px"><label class="f">New schedule name<input type="text" data-scn="${s.id}" placeholder="e.g. Night 6pm–4:30am"></label><label class="f">Start<input type="time" data-scs="${s.id}" value="07:00"></label><label class="f">End<input type="time" data-sce="${s.id}" value="15:30"></label><button class="btn ghost" data-addsched="${s.id}">Add schedule</button></div></div>`).join('');
   $('sitesList').querySelectorAll('[data-savesite]').forEach(b => b.onclick = async () => { const id = b.dataset.savesite; const upd = {}; $('sitesList').querySelectorAll(`[data-s="${id}"]`).forEach(i => upd[i.dataset.k] = i.dataset.k === 'timezone' ? i.value : +i.value); const before = siteById(id);
     const { error } = await sb.from('sites').update(upd).eq('id', id); if (error){ toast(error.message); return; } await audit('site_settings', id, before, upd, 'site settings saved'); toast('Saved'); await loadRefs(); renderSites(); });
   $('sitesList').querySelectorAll('[data-addsched]').forEach(b => b.onclick = async () => { const id = b.dataset.addsched; const name = $('sitesList').querySelector(`[data-scn="${id}"]`).value.trim(); if (!name){ toast('Schedule needs a name'); return; }
     const row = { site_id: id, name, start_time: $('sitesList').querySelector(`[data-scs="${id}"]`).value, end_time: $('sitesList').querySelector(`[data-sce="${id}"]`).value }; const { error } = await sb.from('schedules').insert(row); if (error){ toast(error.message); return; } await audit('schedule_added', id, null, row, ''); await loadRefs(); renderSites(); });
   $('sitesList').querySelectorAll('[data-editsched]').forEach(b => b.onclick = async () => { const x = schedById(b.dataset.editsched);
-    await modal('Edit schedule', `<div class="row"><label class="f">Name<input type="text" data-n value="${esc(x.name)}"></label><label class="f">Start<input type="time" data-st value="${String(x.start_time).slice(0,5)}"></label><label class="f">End<input type="time" data-en value="${String(x.end_time).slice(0,5)}"></label><label class="f">Grace min (blank = site default)<input type="number" data-g value="${x.grace_min ?? ''}"></label></div>`, async m => {
-      const upd = { name: m.querySelector('[data-n]').value.trim(), start_time: m.querySelector('[data-st]').value, end_time: m.querySelector('[data-en]').value, grace_min: m.querySelector('[data-g]').value === '' ? null : +m.querySelector('[data-g]').value }; const { error } = await sb.from('schedules').update(upd).eq('id', x.id); if (error) throw new Error(error.message); await audit('schedule_edited', x.id, x, upd, ''); await loadRefs(); renderSites(); }); });
+    await modal('Edit schedule', `<div class="row"><label class="f">Name<input type="text" data-n value="${esc(x.name)}"></label><label class="f">Start<input type="time" data-st value="${String(x.start_time).slice(0,5)}"></label><label class="f">End<input type="time" data-en value="${String(x.end_time).slice(0,5)}"></label><label class="f">Grace min (blank = site default)<input type="number" data-g value="${x.grace_min ?? ''}"></label><label class="f">Guaranteed paid hrs (blank = none)<input type="number" step="0.5" min="0" data-mp value="${x.min_paid_hours ?? ''}" title="Any day with a punch is paid at least this many hours (worked + breaks topped up); counts toward 40"></label></div>`, async m => {
+      const upd = { name: m.querySelector('[data-n]').value.trim(), start_time: m.querySelector('[data-st]').value, end_time: m.querySelector('[data-en]').value, grace_min: m.querySelector('[data-g]').value === '' ? null : +m.querySelector('[data-g]').value, min_paid_hours: m.querySelector('[data-mp]').value === '' ? null : +m.querySelector('[data-mp]').value }; const { error } = await sb.from('schedules').update(upd).eq('id', x.id); if (error) throw new Error(error.message); await audit('schedule_edited', x.id, x, upd, ''); await loadRefs(); renderSites(); }); });
   $('sitesList').querySelectorAll('[data-delsched]').forEach(b => b.onclick = async () => { const x = schedById(b.dataset.delsched); const used = employeesAll.filter(e => e.schedule_id === x.id).length; if (!confirm(`Delete "${x.name}"?${used ? ' ' + used + ' employees use it and will have no schedule until reassigned.' : ''}`)) return;
     await sb.from('employees').update({ schedule_id: null }).eq('schedule_id', x.id); const { error } = await sb.from('schedules').delete().eq('id', x.id); if (error){ toast(error.message); return; } await audit('schedule_deleted', x.id, x, null, ''); await loadRefs(); renderSites(); });
 }
