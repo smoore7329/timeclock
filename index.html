@@ -255,7 +255,8 @@ const audit = (action, target, after, note) => sb.from('audit').insert({ actor: 
 const lastPunch = empId => punches.filter(p => p.employee_id === empId).sort((a,b) => b.ts.localeCompare(a.ts))[0] || null;
 function stateFor(emp){
   const lp = lastPunch(emp.id); if (!lp) return {next:'in'};
-  if (lp.type === 'in'){ if (dayKey(lp.ts) !== dayKey(Date.now())) return {next:'in', staleIn:lp}; return {next:'out', since:lp}; }
+  // An open punch-in is still "this shift" for up to 18 h, whatever the calendar date (night shifts cross midnight). Older than that = forgot to punch out.
+  if (lp.type === 'in'){ if ((Date.now() - new Date(lp.ts)) / 3600e3 > 18) return {next:'in', staleIn:lp}; return {next:'out', since:lp}; }
   const lock = (site && site.lockout_min) ?? 60, ageMin = (Date.now() - new Date(lp.ts)) / 60000;
   if (ageMin < lock) return {next:'locked', until: new Date(new Date(lp.ts).getTime() + lock*60000), since:lp};
   return {next:'in', since:lp};
@@ -264,7 +265,7 @@ async function punch(type){
   if (!current) return; const st = stateFor(current); if (type === 'in' && st.next === 'locked') return;
   const rec = { id: uid(), employee_id: current.id, site_id: site.id, type, ts: new Date().toISOString(), method: currentMethod, device_id: deviceId, flag: currentMethod === 'fallback' ? 'manual pick - verify photo' : '', synced:false };
   if (currentMethod === 'fallback' && window._fallbackPhoto){ rec.photo = window._fallbackPhoto; window._fallbackPhoto = null; }
-  if (st.staleIn) rec.flag = (rec.flag ? rec.flag + '; ' : '') + 'previous day left open';
+  if (st.staleIn) rec.flag = (rec.flag ? rec.flag + '; ' : '') + 'previous shift left open';
   punches.push(rec); await DB.put('punches', rec); showDone(current, type, rec); push();
 }
 function showDone(emp, type, rec){
@@ -348,10 +349,10 @@ function showTab(t){ document.querySelectorAll('.tabs button').forEach(b => b.cl
   ({today: renderToday, enroll: renderEnrollSelect, roster: renderRoster, device: renderDevice})[t](); }
 
 function renderToday(){
-  const today = dayKey(Date.now()); const todays = punches.filter(p => dayKey(p.ts) === today).sort((a,b) => a.ts.localeCompare(b.ts));
+  const since = new Date(Date.now() - 24*3600e3).toISOString(); const todays = punches.filter(p => p.ts >= since).sort((a,b) => a.ts.localeCompare(b.ts));
   const inNow = employees.filter(e => stateFor(e).next === 'out').length;
-  $('todayStats').innerHTML = `<div class="card"><h3>Punches today (this site)</h3><div style="font-size:32px;font-weight:800">${todays.length}</div></div><div class="card"><h3>Currently in</h3><div style="font-size:32px;font-weight:800">${inNow}</div></div>`;
-  $('todayList').innerHTML = todays.length ? '<table><tr><th>Time</th><th>Employee</th><th></th><th></th></tr>' + todays.map(p => `<tr><td>${fmtT(p.ts)}</td><td>${(empById(p.employee_id)||{}).name || '—'}</td><td><span class="badge">${p.type.toUpperCase()}</span></td><td>${p.flag ? '<span class="badge flag">FLAG</span> ' + p.flag : ''}${p.synced ? '' : ' <span class="badge">not synced yet</span>'}</td></tr>`).join('') + '</table>' : '<div class="note">No punches yet today.</div>';
+  $('todayStats').innerHTML = `<div class="card"><h3>Punches, last 24 hrs (this site)</h3><div style="font-size:32px;font-weight:800">${todays.length}</div></div><div class="card"><h3>Currently in</h3><div style="font-size:32px;font-weight:800">${inNow}</div></div>`;
+  $('todayList').innerHTML = todays.length ? '<table><tr><th>Time</th><th>Employee</th><th></th><th></th></tr>' + todays.map(p => `<tr><td>${dayKey(p.ts) !== dayKey(Date.now()) ? '<span class="note">' + new Date(p.ts).toLocaleDateString(undefined,{weekday:'short'}) + '</span> ' : ''}${fmtT(p.ts)}</td><td>${(empById(p.employee_id)||{}).name || '—'}</td><td><span class="badge">${p.type.toUpperCase()}</span></td><td>${p.flag ? '<span class="badge flag">FLAG</span> ' + p.flag : ''}${p.synced ? '' : ' <span class="badge">not synced yet</span>'}</td></tr>`).join('') + '</table>' : '<div class="note">No punches yet today.</div>';
 }
 function renderEnrollSelect(){ if (typeof disarmRemove === 'function' && removeArm) disarmRemove(); const list = employees.filter(e => e.active && e.pay_type !== 'salary').sort((a,b) => a.name.localeCompare(b.name)); $('enEmp').innerHTML = list.map(e => `<option value="${e.id}">${e.name}${e.face_descs && e.face_descs.length ? ' ✓ enrolled' : ' — not enrolled'}</option>`).join('') || '<option value="">No employees assigned to this site</option>'; $('enMsg').textContent = ''; }
 $('btnCapture').onclick = async () => {
