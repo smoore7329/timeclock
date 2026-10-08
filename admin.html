@@ -249,10 +249,11 @@ const Rules = (() => {
   }
 
   // punches: this employee's punches on this work date, sorted by ts. sched: {start_time,end_time,grace_min}. site: {timezone, grace_min, lunch_flag_min, auto_deduct_min}
-  // adj: {approved_late, adj_hours, pto_hours, note} or null
+  // adj: {approved_late, adj_hours, pto_hours, travel_s2s_hours, travel_h2s_hours, note} or null
+  // travel hours are logged only: carried through for payroll, never added to paid, regular, OT or total
   function computeDay({dateKey, punches, sched, site, adj, rules}){
     const tz = site.timezone, R = Object.assign({b1h:4, b1m:15, b2h:6.5, b2m:15, lateInFlagMin:5, lunchGraceMin:5}, rules||{});
-    const flags = [], out = {dateKey, punchIn:null, punchOut:null, paidStart:null, paidEnd:null, lunchMin:0, worked:0, breakMin:0, adj:+((adj&&adj.adj_hours)||0), pto:+((adj&&adj.pto_hours)||0), guar:0, paid:0, autoClosed:false, flags};
+    const flags = [], out = {dateKey, punchIn:null, punchOut:null, paidStart:null, paidEnd:null, lunchMin:0, worked:0, breakMin:0, adj:+((adj&&adj.adj_hours)||0), pto:+((adj&&adj.pto_hours)||0), ts2s:+((adj&&adj.travel_s2s_hours)||0), th2s:+((adj&&adj.travel_h2s_hours)||0), guar:0, paid:0, autoClosed:false, flags};
     if (!punches.length){ if (out.pto || out.adj){ out.paid = round2(out.adj); if (out.pto) flags.push(`PTO ${out.pto} hrs`); if (out.adj) flags.push(`Adj ${out.adj>0?'+':''}${out.adj} hrs`); } return out; }
     const { start: schedStart, end: schedEnd } = schedWindow(dateKey, sched, tz);
     const grace = (sched && sched.grace_min != null) ? sched.grace_min : (site.grace_min ?? 15);
@@ -302,9 +303,9 @@ const Rules = (() => {
 
   // days: array of computeDay results for one employee in one week
   function computeWeek(days, otAfter = 40, otx = 1.5){
-    const worked = round2(days.reduce((a,d) => a + d.worked, 0)), breaks = round2(days.reduce((a,d) => a + d.breakMin, 0)/60), adj = round2(days.reduce((a,d) => a + d.adj, 0)), pto = round2(days.reduce((a,d) => a + d.pto, 0)), guar = round2(days.reduce((a,d) => a + (d.guar||0), 0));
+    const worked = round2(days.reduce((a,d) => a + d.worked, 0)), breaks = round2(days.reduce((a,d) => a + d.breakMin, 0)/60), adj = round2(days.reduce((a,d) => a + d.adj, 0)), pto = round2(days.reduce((a,d) => a + d.pto, 0)), guar = round2(days.reduce((a,d) => a + (d.guar||0), 0)), ts2s = round2(days.reduce((a,d) => a + (d.ts2s||0), 0)), th2s = round2(days.reduce((a,d) => a + (d.th2s||0), 0));
     const paid = round2(worked + breaks + adj), reg = round2(Math.min(paid, otAfter) + pto + guar), ot = round2(Math.max(0, paid - otAfter));
-    return {days: days.filter(d => d.paid > 0 || d.guar > 0).length, worked, breaks, adj, pto, guar, paid, reg, ot, total: round2(paid + pto + guar), otEquiv: round2(reg + ot*otx), flagged: days.filter(d => d.flags.length).length};
+    return {days: days.filter(d => d.paid > 0 || d.guar > 0).length, worked, breaks, adj, pto, guar, ts2s, th2s, paid, reg, ot, total: round2(paid + pto + guar), otEquiv: round2(reg + ot*otx), flagged: days.filter(d => d.flags.length).length};
   }
   return {parts, dayKey, zoned, fmtTime, addDays, weekStartOf, computeDay, computeWeek, round2, workDate, schedWindow, crossesMidnight};
 })();
@@ -392,9 +393,9 @@ async function loadWeek(){
     const mine = punches.filter(p => p.employee_id === e.id).map(p => Object.assign({}, p, { work_date: Rules.workDate(p.ts, sched, site.timezone) }));
     const dayRes = days.map(dk => { const ps = mine.filter(p => p.work_date === dk); const adj = (adjs||[]).find(a => a.employee_id === e.id && a.work_date === dk) || null;
       const r = Rules.computeDay({dateKey: dk, punches: ps, sched: e.pay_type === 'salary' ? sched : sched, site, adj}); r.punches = ps; r.adjRow = adj; return r; });
-    const wk = e.pay_type === 'salary' ? {days:0, worked:0, breaks:0, adj:0, pto:0, guar:0, paid:0, reg:40, ot:0, total:40, otEquiv:40, flagged:0, salary:true} : Rules.computeWeek(dayRes);
+    const wk = e.pay_type === 'salary' ? {days:0, worked:0, breaks:0, adj:0, pto:0, guar:0, paid:0, reg:40, ot:0, total:40, otEquiv:40, flagged:0, salary:true, ts2s: Rules.round2(dayRes.reduce((a,d) => a + (d.ts2s||0), 0)), th2s: Rules.round2(dayRes.reduce((a,d) => a + (d.th2s||0), 0))} : Rules.computeWeek(dayRes);
     return { emp: e, sched, days: dayRes, week: wk };
-  }).filter(r => { const worked = r.days.some(d => d.punches.length || d.pto || d.adj);
+  }).filter(r => { const worked = r.days.some(d => d.punches.length || d.pto || d.adj || d.ts2s || d.th2s);
     // inactive people only appear if they actually punched (or had time added) this week
     if (r.emp.active === false) return worked;
     return worked || r.week.total > 0 || r.emp.site_id === site.id; });
@@ -405,10 +406,10 @@ async function loadWeek(){
 function renderWeek(){
   const { site, ws, rows } = RV; const tot = k => Rules.round2(rows.reduce((a, r) => a + (r.week[k]||0), 0));
   $('rvTitle').textContent = `${site.name} — week of ${ws}`;
-  $('rvKpi').innerHTML = `<div><b>${rows.length}</b><span>employees</span></div><div><b>${tot('paid')}</b><span>worked paid hrs</span></div><div><b>${tot('ot')}</b><span>OT hrs (1.5x)</span></div><div><b>${tot('pto')}</b><span>PTO hrs</span></div><div><b>${rows.reduce((a,r)=>a+r.week.flagged,0)}</b><span>flagged days</span></div><div><b>${RV.punches.filter(p => p.flag && !p.reviewed).length}</b><span>punches to review</span></div>`;
-  $('rvWeek').innerHTML = `<tr><th>Employee</th><th>Schedule</th><th class="n">Days</th><th class="n">Worked</th><th class="n">Breaks</th><th class="n">Adj</th><th class="n">PTO</th><th class="n">Guar</th><th class="n">Regular</th><th class="n">OT</th><th class="n">Total paid</th><th class="n">Flags</th></tr>` +
-    rows.map((r, i) => `<tr class="click${RV_OPEN === r.emp.id ? ' sel' : ''}" data-i="${i}"><td><span class="caret">${RV_OPEN === r.emp.id ? '▾' : '▸'}</span><b>${esc(r.emp.name)}</b><br><span class="note">#${esc(r.emp.code||'')}${r.emp.site_id !== site.id ? ' · now at another site' : ''}${r.emp.active === false ? ' <span class="badge flag">inactive</span>' : ''}</span></td><td>${r.week.salary ? '<span class="badge">salary</span>' : esc((r.sched||{}).name || '—')}</td><td class="n">${r.week.days}</td><td class="n">${r.week.worked}</td><td class="n">${r.week.breaks}</td><td class="n">${r.week.adj||'-'}</td><td class="n">${r.week.pto||'-'}</td><td class="n">${r.week.guar||'-'}</td><td class="n">${r.week.reg}</td><td class="n">${r.week.ot ? '<b>'+r.week.ot+'</b>' : '-'}</td><td class="n">${r.week.total}</td><td class="n">${r.week.flagged ? '<span class="badge flag">'+r.week.flagged+'</span>' : ''}</td></tr>` + (RV_OPEN === r.emp.id ? `<tr class="detail"><td colspan="12">${detailHtml(r)}</td></tr>` : '')).join('') +
-    `<tr><th>Total</th><th></th><th class="n">${rows.reduce((a,r)=>a+r.week.days,0)}</th><th class="n">${tot('worked')}</th><th class="n">${tot('breaks')}</th><th class="n">${tot('adj')}</th><th class="n">${tot('pto')}</th><th class="n">${tot('guar')}</th><th class="n">${tot('reg')}</th><th class="n">${tot('ot')}</th><th class="n">${tot('total')}</th><th></th></tr>`;
+  $('rvKpi').innerHTML = `<div><b>${rows.length}</b><span>employees</span></div><div><b>${tot('paid')}</b><span>worked paid hrs</span></div><div><b>${tot('ot')}</b><span>OT hrs (1.5x)</span></div><div><b>${tot('pto')}</b><span>PTO hrs</span></div><div><b>${tot('ts2s')}</b><span>travel site&rarr;site hrs</span></div><div><b>${tot('th2s')}</b><span>travel home&rarr;site hrs</span></div><div><b>${rows.reduce((a,r)=>a+r.week.flagged,0)}</b><span>flagged days</span></div><div><b>${RV.punches.filter(p => p.flag && !p.reviewed).length}</b><span>punches to review</span></div>`;
+  $('rvWeek').innerHTML = `<tr><th>Employee</th><th>Schedule</th><th class="n">Days</th><th class="n">Worked</th><th class="n">Breaks</th><th class="n">Adj</th><th class="n">PTO</th><th class="n">Guar</th><th class="n">Regular</th><th class="n">OT</th><th class="n">Total paid</th><th class="n" title="Logged only, not in any total">Travel S&rarr;S</th><th class="n" title="Logged only, not in any total">Travel H&rarr;S</th><th class="n">Flags</th></tr>` +
+    rows.map((r, i) => `<tr class="click${RV_OPEN === r.emp.id ? ' sel' : ''}" data-i="${i}"><td><span class="caret">${RV_OPEN === r.emp.id ? '▾' : '▸'}</span><b>${esc(r.emp.name)}</b><br><span class="note">#${esc(r.emp.code||'')}${r.emp.site_id !== site.id ? ' · now at another site' : ''}${r.emp.active === false ? ' <span class="badge flag">inactive</span>' : ''}</span></td><td>${r.week.salary ? '<span class="badge">salary</span>' : esc((r.sched||{}).name || '—')}</td><td class="n">${r.week.days}</td><td class="n">${r.week.worked}</td><td class="n">${r.week.breaks}</td><td class="n">${r.week.adj||'-'}</td><td class="n">${r.week.pto||'-'}</td><td class="n">${r.week.guar||'-'}</td><td class="n">${r.week.reg}</td><td class="n">${r.week.ot ? '<b>'+r.week.ot+'</b>' : '-'}</td><td class="n">${r.week.total}</td><td class="n">${r.week.ts2s||'-'}</td><td class="n">${r.week.th2s||'-'}</td><td class="n">${r.week.flagged ? '<span class="badge flag">'+r.week.flagged+'</span>' : ''}</td></tr>` + (RV_OPEN === r.emp.id ? `<tr class="detail"><td colspan="14">${detailHtml(r)}</td></tr>` : '')).join('') +
+    `<tr><th>Total</th><th></th><th class="n">${rows.reduce((a,r)=>a+r.week.days,0)}</th><th class="n">${tot('worked')}</th><th class="n">${tot('breaks')}</th><th class="n">${tot('adj')}</th><th class="n">${tot('pto')}</th><th class="n">${tot('guar')}</th><th class="n">${tot('reg')}</th><th class="n">${tot('ot')}</th><th class="n">${tot('total')}</th><th class="n">${tot('ts2s')}</th><th class="n">${tot('th2s')}</th><th></th></tr>`;
   $('rvWeek').querySelectorAll('tr.click').forEach(tr => tr.onclick = () => { const id = RV.rows[+tr.dataset.i].emp.id; RV_OPEN = RV_OPEN === id ? null : id; renderWeek(); });
   const oi = RV.rows.findIndex(r => r.emp.id === RV_OPEN);
   if (oi >= 0) $('rvWeek').querySelectorAll('tr.detail button[data-a]').forEach(b => b.onclick = e => { e.stopPropagation(); (b.dataset.a === 'punches' ? editPunches : editTime)(RV.rows[oi], +b.dataset.d); });
@@ -417,14 +418,14 @@ function renderWeek(){
 function detailHtml(r){
   const tz = RV.site.timezone, w = r.week;
   if (w.salary) return `<div class="detailBox note">Salaried — does not punch. Fixed 40 hrs at ${esc(RV.site.name)}.</div>`;
-  const sum = `<div class="wkSum"><span>Worked <b>${w.worked}</b></span><span>+ Breaks <b>${w.breaks}</b></span>${w.adj ? `<span>+ Adj <b>${w.adj}</b></span>` : ''}<span>= Paid toward 40 <b>${w.paid}</b></span><span>Regular <b>${w.reg}</b></span><span>OT <b${w.ot ? ' style="color:#8a2d25"' : ''}>${w.ot || 0}</b></span>${w.pto ? `<span>PTO <b>${w.pto}</b></span>` : ''}${w.guar ? `<span>Guaranteed (straight) <b>${w.guar}</b></span>` : ''}<span>Total paid <b>${w.total}</b></span></div>`;
+  const sum = `<div class="wkSum"><span>Worked <b>${w.worked}</b></span><span>+ Breaks <b>${w.breaks}</b></span>${w.adj ? `<span>+ Adj <b>${w.adj}</b></span>` : ''}<span>= Paid toward 40 <b>${w.paid}</b></span><span>Regular <b>${w.reg}</b></span><span>OT <b${w.ot ? ' style="color:#8a2d25"' : ''}>${w.ot || 0}</b></span>${w.pto ? `<span>PTO <b>${w.pto}</b></span>` : ''}${w.guar ? `<span>Guaranteed (straight) <b>${w.guar}</b></span>` : ''}<span>Total paid <b>${w.total}</b></span>${w.ts2s || w.th2s ? `<span class="note">Travel, logged only (not in totals): site&rarr;site <b>${w.ts2s}</b> &middot; home&rarr;site <b>${w.th2s}</b></span>` : ''}</div>`;
   let run = 0;
   const body = r.days.map((d, di) => {
     run = Rules.round2(run + (d.paid || 0)); const ot = Rules.round2(Math.max(0, run - 40));
     const dn = new Date(d.dateKey + 'T12:00:00Z').toLocaleDateString(undefined, {weekday:'short', month:'numeric', day:'numeric', timeZone:'UTC'});
     const ps = d.punches.map(p => `<span class="badge ${p.type}">${p.type.toUpperCase()} ${Rules.fmtTime(p.ts, tz)}${Rules.dayKey(p.ts, tz) !== d.dateKey ? ' <small title="next calendar day">+1</small>' : ''}${p.method === 'fallback' ? ' <span title="manual pick">✎</span>' : p.method === 'manual' ? ' ✎' : ''}</span>`).join(' ');
     const has = d.punches.length || d.paid || d.pto || d.guar;
-    return `<tr class="dayrow"><td>${dn}</td><td>${ps || '<span class="note">—</span>'}</td><td class="n">${d.lunchMin || '-'}</td><td class="n">${d.worked || '-'}</td><td class="n">${d.breakMin ? d.breakMin + 'm' : '-'}</td><td class="n"><b>${d.paid || '-'}</b>${d.pto ? '<br><span class="note">+' + d.pto + ' PTO</span>' : ''}${d.guar ? '<br><span class="note">+' + d.guar + ' guar</span>' : ''}</td><td class="n">${has ? `<span class="wtd${ot ? ' ot' : ''}">${run}</span>${ot ? `<br><span class="note">${ot} OT</span>` : ''}` : '<span class="note">' + run + '</span>'}</td><td>${d.flags.map(f => `<span class="badge flag">${esc(f)}</span>`).join(' ')}</td><td style="white-space:nowrap"><button class="btn sm ghost" data-a="punches" data-d="${di}">Edit / delete punches</button> <button class="btn sm ghost" data-a="time" data-d="${di}">Edit / approve extra time</button></td></tr>`;
+    return `<tr class="dayrow"><td>${dn}</td><td>${ps || '<span class="note">—</span>'}</td><td class="n">${d.lunchMin || '-'}</td><td class="n">${d.worked || '-'}</td><td class="n">${d.breakMin ? d.breakMin + 'm' : '-'}</td><td class="n"><b>${d.paid || '-'}</b>${d.pto ? '<br><span class="note">+' + d.pto + ' PTO</span>' : ''}${d.guar ? '<br><span class="note">+' + d.guar + ' guar</span>' : ''}${d.ts2s ? '<br><span class="note" title="logged only, not in paid">' + d.ts2s + ' travel S&rarr;S</span>' : ''}${d.th2s ? '<br><span class="note" title="logged only, not in paid">' + d.th2s + ' travel H&rarr;S</span>' : ''}</td><td class="n">${has ? `<span class="wtd${ot ? ' ot' : ''}">${run}</span>${ot ? `<br><span class="note">${ot} OT</span>` : ''}` : '<span class="note">' + run + '</span>'}</td><td>${d.flags.map(f => `<span class="badge flag">${esc(f)}</span>`).join(' ')}</td><td style="white-space:nowrap"><button class="btn sm ghost" data-a="punches" data-d="${di}">Edit / delete punches</button> <button class="btn sm ghost" data-a="time" data-d="${di}">Edit / approve extra time</button></td></tr>`;
   }).join('');
   return `<div class="detailBox">${sum}<div class="tableWrap"><table><tr><th>Day</th><th>Punches</th><th class="n">Lunch</th><th class="n">Worked</th><th class="n">Breaks</th><th class="n">Paid</th><th class="n">Week to date</th><th>Flags</th><th></th></tr>${body}</table></div></div>`;
 }
@@ -450,9 +451,11 @@ async function editTime(r, di){
   const d = r.days[di], a = d.adjRow || {};
   const html = `<div class="note">${r.emp.name} — ${d.dateKey}</div>
     <label class="f"><span><input type="checkbox" data-appr ${a.approved_late ? 'checked' : ''}> Approve time past scheduled end (pay to actual punch-out)</span></label>
-    <div class="row"><label class="f">Adjust worked hours (+/-, counts toward OT)<input type="number" step="0.25" data-adj value="${a.adj_hours || 0}"></label><label class="f">PTO / holiday hours (straight time, no OT)<input type="number" step="0.25" min="0" data-pto value="${a.pto_hours || 0}"></label></div>` + noteField();
+    <div class="row"><label class="f">Adjust worked hours (+/-, counts toward OT)<input type="number" step="0.25" data-adj value="${a.adj_hours || 0}"></label><label class="f">PTO / holiday hours (straight time, no OT)<input type="number" step="0.25" min="0" data-pto value="${a.pto_hours || 0}"></label></div>
+    <div class="row"><label class="f">Travel hours — site to site (logged only, not in any total)<input type="number" step="0.25" min="0" data-ts2s value="${a.travel_s2s_hours || 0}"></label><label class="f">Travel hours — home to site (logged only, not in any total)<input type="number" step="0.25" min="0" data-th2s value="${a.travel_h2s_hours || 0}"></label></div>` + noteField();
   await modal('Edit / approve extra time', html, async m => {
-    const note = needNote(m); const row = { employee_id: r.emp.id, work_date: d.dateKey, approved_late: m.querySelector('[data-appr]').checked, adj_hours: +m.querySelector('[data-adj]').value || 0, pto_hours: +m.querySelector('[data-pto]').value || 0, note, updated_by: me.user_id };
+    const note = needNote(m); const row = { employee_id: r.emp.id, work_date: d.dateKey, approved_late: m.querySelector('[data-appr]').checked, adj_hours: +m.querySelector('[data-adj]').value || 0, pto_hours: +m.querySelector('[data-pto]').value || 0, travel_s2s_hours: +m.querySelector('[data-ts2s]').value || 0, travel_h2s_hours: +m.querySelector('[data-th2s]').value || 0, note, updated_by: me.user_id };
+    if (row.travel_s2s_hours < 0 || row.travel_h2s_hours < 0) throw new Error('Travel hours can\'t be negative.');
     const { error } = await sb.from('day_adjustments').upsert(row, { onConflict: 'employee_id,work_date' }); if (error) throw new Error(error.message);
     await audit('day_adjustment', r.emp.id + ':' + d.dateKey, a.id ? a : null, row, note); toast('Saved'); loadWeek();
   });
@@ -486,7 +489,7 @@ function tsSplit(r){
 function buildTimesheet(wb, RV, who){
   const { site, ws, rows, days } = RV;
   const sh = wb.addWorksheet('Timesheet', { views: [{ state: 'frozen', xSplit: 3, ySplit: 7 }] });
-  sh.columns = [{width:26},{width:15},{width:17},{width:14},{width:14},{width:14},{width:14},{width:14},{width:14},{width:14},{width:14},{width:12},{width:10},{width:12},{width:12},{width:12},{width:12}];
+  sh.columns = [{width:26},{width:15},{width:17},{width:14},{width:14},{width:14},{width:14},{width:14},{width:14},{width:14},{width:14},{width:12},{width:10},{width:12},{width:12},{width:13},{width:13},{width:12}];
   const DC = ['D','E','F','G','H','I','J'], thin = { style: 'thin', color: { argb: 'FFD9D9D9' } }, grid = { top: thin, left: thin, bottom: thin, right: thin };
   const fill = argb => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
   const grey = { color: { argb: 'FF7F7F7F' }, size: 10 };
@@ -504,8 +507,8 @@ function buildTimesheet(wb, RV, who){
     const a = sh.getCell(DC[i] + '6'); a.value = fmtD(dk, {weekday:'short'}); a.font = grey; a.alignment = { horizontal: 'right' };
     const b = sh.getCell(DC[i] + '7'); b.value = fmtD(dk, {month:'long', day:'numeric'}); });
   ['NAME','MEMBER CODE','TYPE'].forEach((t, i) => sh.getCell(7, i + 1).value = t);
-  ['TOTALS','DEC. HRS','RATES','TOTAL','PER DIEM','TRAVEL','MISC'].forEach((t, i) => sh.getCell(7, 11 + i).value = t);  // O–Q are blank, for payroll to fill in
-  sh.getRow(7).eachCell({ includeEmpty: true }, (c, n) => { if (n > 17) return; c.font = grey; c.alignment = { horizontal: n > 3 ? 'right' : 'left' }; c.border = { bottom: { style: 'thin', color: { argb: 'FF7F7F7F' } } }; });
+  ['TOTALS','DEC. HRS','RATES','TOTAL','PER DIEM','TRAVEL SITE-SITE HRS','TRAVEL HOME-SITE HRS','MISC'].forEach((t, i) => sh.getCell(7, 11 + i).value = t);  // O and R blank for payroll; P/Q = travel hours logged in the review page (not in any total)
+  sh.getRow(7).eachCell({ includeEmpty: true }, (c, n) => { if (n > 18) return; c.font = grey; c.alignment = { horizontal: n > 3 ? 'right' : 'left', vertical: 'bottom', wrapText: n > 15 && n < 18 }; c.border = { bottom: { style: 'thin', color: { argb: 'FF7F7F7F' } } }; });
   // one 5-row block per employee
   const TYPES = ['Payroll Hours', 'Regular Hours', 'Weekly OT', 'PTO / Holiday', 'Guaranteed (straight)'];
   let r0 = 8;
@@ -532,8 +535,9 @@ function buildTimesheet(wb, RV, who){
       const wk = sp.reduce((a, x) => a + (k === 0 ? x.reg + x.ot + x.pto + x.guar : [x.reg, x.ot, x.pto, x.guar][k - 1]), 0) / 1440; GT[k] += wk;
       const k1 = row.getCell('K'); k1.value = { formula: `SUM(D${R}:J${R})`, result: wk }; k1.numFmt = TS.HM; k1.font = { bold: true }; k1.alignment = { horizontal: 'right' };
       const l1 = row.getCell('L'); l1.value = { formula: `K${R}*24`, result: Rules.round2(wk * 24) }; l1.numFmt = TS.DEC; l1.alignment = { horizontal: 'right' }; if (k === 0) l1.font = { bold: true };
-      for (let n = 1; n <= 17; n++) row.getCell(n).border = grid;
-      if (k === 0) [15, 16, 17].forEach(n => { row.getCell(n).numFmt = '$#,##0.00;-$#,##0.00;""'; });
+      for (let n = 1; n <= 18; n++) row.getCell(n).border = grid;
+      if (k === 0){ [15, 18].forEach(n => { row.getCell(n).numFmt = '$#,##0.00;-$#,##0.00;""'; });
+        [[16, 'ts2s'], [17, 'th2s']].forEach(([n, key]) => { const c = row.getCell(n); c.value = r.week[key] || 0; c.numFmt = TS.DEC; c.alignment = { horizontal: 'right' }; }); }
     });
     r0 += TYPES.length;
   });
@@ -547,8 +551,9 @@ function buildTimesheet(wb, RV, who){
       const v = col === 'K' ? GT[k] : people.reduce((a, r) => { const x = tsSplit(r)[i]; return a + (k === 0 ? x.reg + x.ot + x.pto + x.guar : [x.reg, x.ot, x.pto, x.guar][k - 1]); }, 0) / 1440;
       c.value = { formula: `SUMIF($C$8:$C$${last},"${t}",${col}$8:${col}$${last})`, result: v }; c.numFmt = TS.HM; c.alignment = { horizontal: 'right' }; });
     const l1 = row.getCell('L'); l1.value = { formula: `K${R}*24`, result: Rules.round2(GT[k] * 24) }; l1.numFmt = TS.DEC; l1.alignment = { horizontal: 'right' };
-    for (let n = 1; n <= 17; n++){ const c = row.getCell(n); c.font = { bold: true }; c.fill = fill(TS.FILL.head); c.border = grid; }
-    if (k === 0) [15, 16, 17].forEach(n => { const col = String.fromCharCode(64 + n); const c = row.getCell(n); c.value = { formula: `SUM(${col}8:${col}${last})`, result: 0 }; c.numFmt = '$#,##0.00;-$#,##0.00;""'; });
+    for (let n = 1; n <= 18; n++){ const c = row.getCell(n); c.font = { bold: true }; c.fill = fill(TS.FILL.head); c.border = grid; }
+    if (k === 0) [15, 16, 17, 18].forEach(n => { const col = String.fromCharCode(64 + n); const c = row.getCell(n); const key = n === 16 ? 'ts2s' : n === 17 ? 'th2s' : null;
+      c.value = { formula: `SUM(${col}8:${col}${last})`, result: key ? Rules.round2(people.reduce((a, r) => a + (r.week[key] || 0), 0)) : 0 }; c.numFmt = key ? TS.DEC : '$#,##0.00;-$#,##0.00;""'; });
   });
   sh.pageSetup = { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, printTitlesRow: '6:7', margins: { left: .3, right: .3, top: .4, bottom: .4, header: .2, footer: .2 } };
   return sh;
@@ -561,11 +566,11 @@ function addTable(wb, name, aoa){
 }
 $('rvExport').onclick = async () => {
   const { site, ws, rows, days } = RV, tz = site.timezone;
-  const weekly = [['Employee','Emp #','Site','Schedule','Week Start','Days','Hours Worked','Break Hrs Added','Adjustments','Worked Paid Hrs','PTO/Holiday Hrs','Guaranteed Hrs (straight)','Regular Hours','OT Hours (1.5x)','Total Paid Hrs','OT-Equivalent Hours','Flagged Days','Per Diem','Travel','Misc']];
-  rows.forEach(r => weekly.push([r.emp.name, r.emp.code, site.name, r.week.salary ? 'Salary' : (r.sched||{}).name || '', ws, r.week.days, r.week.worked, r.week.breaks, r.week.adj, r.week.paid, r.week.pto, r.week.guar, r.week.reg, r.week.ot, r.week.total, r.week.otEquiv, r.week.flagged, '', '', '']));
-  const daily = [['Employee','Emp #','Date','Day','Schedule','Punch In','Punch Out','Paid Start','Paid End','Lunch (min)','Hours Worked','Break Min Added','Adj Hours','PTO Hours','Guaranteed Hrs','Paid Hours (worked)','Flags']];
-  rows.filter(r => !r.week.salary).forEach(r => r.days.forEach(d => { if (!d.punches.length && !d.pto && !d.adj && !d.guar) return; const dn = new Date(d.dateKey + 'T12:00:00Z').toLocaleDateString('en-US', {weekday:'short', timeZone:'UTC'});
-    daily.push([r.emp.name, r.emp.code, d.dateKey, dn, (r.sched||{}).name || '', d.punchIn ? Rules.fmtTime(d.punchIn, tz) : '', d.punchOut ? Rules.fmtTime(d.punchOut, tz) : (d.autoClosed ? 'auto' : ''), d.paidStart ? Rules.fmtTime(d.paidStart, tz) : '', d.paidEnd ? Rules.fmtTime(d.paidEnd, tz) : '', d.lunchMin, d.worked, d.breakMin, d.adj, d.pto, d.guar || 0, d.paid, d.flags.join('; ')]); }));
+  const weekly = [['Employee','Emp #','Site','Schedule','Week Start','Days','Hours Worked','Break Hrs Added','Adjustments','Worked Paid Hrs','PTO/Holiday Hrs','Guaranteed Hrs (straight)','Regular Hours','OT Hours (1.5x)','Total Paid Hrs','OT-Equivalent Hours','Flagged Days','Per Diem','Travel Site-to-Site Hrs','Travel Home-to-Site Hrs','Misc']];
+  rows.forEach(r => weekly.push([r.emp.name, r.emp.code, site.name, r.week.salary ? 'Salary' : (r.sched||{}).name || '', ws, r.week.days, r.week.worked, r.week.breaks, r.week.adj, r.week.paid, r.week.pto, r.week.guar, r.week.reg, r.week.ot, r.week.total, r.week.otEquiv, r.week.flagged, '', r.week.ts2s || 0, r.week.th2s || 0, '']));
+  const daily = [['Employee','Emp #','Date','Day','Schedule','Punch In','Punch Out','Paid Start','Paid End','Lunch (min)','Hours Worked','Break Min Added','Adj Hours','PTO Hours','Guaranteed Hrs','Paid Hours (worked)','Travel Site-to-Site Hrs','Travel Home-to-Site Hrs','Flags']];
+  rows.filter(r => !r.week.salary).forEach(r => r.days.forEach(d => { if (!d.punches.length && !d.pto && !d.adj && !d.guar && !d.ts2s && !d.th2s) return; const dn = new Date(d.dateKey + 'T12:00:00Z').toLocaleDateString('en-US', {weekday:'short', timeZone:'UTC'});
+    daily.push([r.emp.name, r.emp.code, d.dateKey, dn, (r.sched||{}).name || '', d.punchIn ? Rules.fmtTime(d.punchIn, tz) : '', d.punchOut ? Rules.fmtTime(d.punchOut, tz) : (d.autoClosed ? 'auto' : ''), d.paidStart ? Rules.fmtTime(d.paidStart, tz) : '', d.paidEnd ? Rules.fmtTime(d.paidEnd, tz) : '', d.lunchMin, d.worked, d.breakMin, d.adj, d.pto, d.guar || 0, d.paid, d.ts2s || 0, d.th2s || 0, d.flags.join('; ')]); }));
   const pun = [['Employee','Emp #','Work date','Date','Time','Type','Method','Flag','Reviewed','Device','Timestamp (UTC)']];
   RV.punches.forEach(p => { const e = rows.find(r => r.emp.id === p.employee_id); pun.push([e ? e.emp.name : p.employee_id, e ? e.emp.code : '', Rules.workDate(p.ts, e ? e.sched : null, tz), Rules.dayKey(p.ts, tz), Rules.fmtTime(p.ts, tz), p.type, p.method, p.flag || '', p.reviewed ? 'Y' : '', p.device_id || '', p.ts]); });
   const wb = new ExcelJS.Workbook(); wb.creator = 'AIME Time Clock'; wb.calcProperties.fullCalcOnLoad = true;
