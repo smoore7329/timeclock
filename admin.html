@@ -673,7 +673,7 @@ function renderCloseBar(){
       <button class="btn ghost sm" id="rvArch">Archived Excel</button>${isAdmin() ? '<button class="btn ghost sm" id="rvReopen">Reopen week</button>' : ''}`;
     $('rvArch').onclick = () => downloadArchived(c);
     if (isAdmin()) $('rvReopen').onclick = reopenWeek;
-  } else if (isAdmin()){
+  } else if (isAdmin() || me.role === 'supervisor'){
     const reopened = RV.closeHist.length ? ` <span class="note">(reopened ${esc(fmtWhen(RV.closeHist[0].reopened_at))} by ${esc(RV.closeHist[0].reopened_by_name || '?')}: ${esc(RV.closeHist[0].reopen_note || '')})</span>` : '';
     el.innerHTML = `<span class="badge">OPEN</span><div class="grow">This pay week is still open for edits.${reopened}<br><span class="note">After payroll is done, close it to lock it and save it to the Archive.</span></div><button class="btn sm" id="rvCloseGo">Close week…</button>`;
     $('rvCloseGo').onclick = closeWeek;
