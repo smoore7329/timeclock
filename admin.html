@@ -60,7 +60,7 @@
   .banner{display:flex;gap:12px;align-items:center;flex-wrap:wrap;border-radius:12px;padding:12px 16px;margin-bottom:14px;border:1px solid var(--line);background:var(--panel)}
   .banner.closed{background:#e9f1f8;border-color:#9fb6ca} .banner.warn{background:#fff6e5;border-color:#e8c27a}
   .banner .grow{flex:1;min-width:220px}
-  .badge.closed{background:#1f3a4d;color:#fff} .badge.reopened{background:#e3e9ee;color:#5f7280;text-decoration:line-through}
+  .badge.closed{background:#1f3a4d;color:#fff} .badge.sub{background:#e8e0f5;color:#4b2f7a} .badge.reopened{background:#e3e9ee;color:#5f7280;text-decoration:line-through}
   .modal .box.wide{max-width:1000px}
   .bulk{background:#eef3f7;border-radius:10px;padding:10px;margin:10px 0}
   .bulk>span{flex:0 0 auto;min-width:0;align-self:center}
@@ -109,11 +109,12 @@
   <div id="v-employees" class="view hidden">
     <div class="card" id="empAddCard"><h2>Add employee (central list)</h2><div class="row">
       <label class="f">Full name<input type="text" id="eName"></label><label class="f">Employee #<input type="text" id="eCode"></label>
-      <label class="f">Pay type<select id="ePay"><option value="hourly">Hourly</option><option value="salary">Salary</option></select></label>
+      <label class="f">Pay type<select id="ePay"><option value="hourly">Hourly</option><option value="salary">Salary</option><option value="sub">Sub (subcontractor)</option></select></label>
+      <label class="f hidden" id="eCoWrap">Company (sub)<input type="text" id="eCo" list="coList" placeholder="e.g. Acme Electric"></label><datalist id="coList"></datalist>
       <label class="f">Site<select id="eSite"></select></label><label class="f">Schedule<select id="eSched"></select></label>
       <label class="f">Class<select id="eClass"></select></label>
       <button class="btn" id="eAdd">Add</button></div></div>
-    <div class="card"><div class="row"><label class="f">Search<input type="text" id="eSearch" placeholder="name or #"></label><label class="f">Show<select id="eFilter"><option value="mine">My sites</option><option value="unassigned">Unassigned</option><option value="all">Everyone</option><option value="inactive">Inactive</option></select></label><label class="f">Class<select id="eClassF"></select></label></div>
+    <div class="card"><div class="row"><label class="f">Search<input type="text" id="eSearch" placeholder="name, # or sub company"></label><label class="f">Show<select id="eFilter"><option value="mine">My sites</option><option value="unassigned">Unassigned</option><option value="all">Everyone</option><option value="inactive">Inactive</option><option value="subs">Subs only</option><option value="crew">AIME crew only</option></select></label><label class="f">Class<select id="eClassF"></select></label></div>
       <div class="row hidden bulk" id="eBulk"><span><b id="eBulkN">0</b> selected</span><label class="f">Set class<select id="eBulkC"></select></label><button class="btn" id="eBulkGo">Apply to selected</button><button class="btn ghost" id="eBulkX">Clear selection</button></div>
       <div class="tableWrap"><table id="empTable"></table></div></div>
     <div class="card hidden" id="clsCard"><h2>Job classifications</h2>
@@ -133,7 +134,7 @@
       <div class="note" style="margin-top:6px">Every pay week an admin has closed, for all sites, kept forever. Each close-out stores the final totals and the Excel file exactly as they were when the week was closed. Closed weeks are locked; changes after close are paid as corrections in an open week.</div></div>
     <div class="card"><h2>Closed weeks</h2><div class="tableWrap"><table id="arTable"></table></div></div>
     <div class="card"><h2>Employee history</h2>
-      <div class="row"><label class="f">Employee name or #<input type="text" id="arEmp" placeholder="e.g. Garcia or 1042"></label><label class="f">Class<select id="arClass"></select></label><button class="btn ghost" id="arEmpXls" disabled>Download Excel</button></div>
+      <div class="row"><label class="f">Name, # or sub company<input type="text" id="arEmp" placeholder="e.g. Garcia, 1042 or Acme"></label><label class="f">Class<select id="arClass"></select></label><button class="btn ghost" id="arEmpXls" disabled>Download Excel</button></div>
       <div class="tableWrap" style="margin-top:10px"><table id="arEmpTable"></table></div></div>
     <div class="card"><h2>Hours by classification</h2><div class="note" style="margin-bottom:8px">Totals across the closed weeks listed above (reopened close-outs left out), using each person's class as of the week it was closed.</div><div class="tableWrap"><table id="arClassTable"></table></div></div>
   </div>
@@ -361,6 +362,12 @@ const clsById = id => classes.find(c => c.id === id);
 const clsCode = id => (clsById(id) || {}).code || '';
 // dropdown of codes; keeps a hidden (inactive) code visible if it is the current value
 const clsOpts = (cur, first = '— none —') => `<option value="">${first}</option>` + classes.filter(c => c.active || c.id === cur).map(c => `<option value="${c.id}" ${c.id === cur ? 'selected' : ''}>${esc(c.code)}${c.description ? ' — ' + esc(c.description) : ''}${c.active ? '' : ' (hidden)'}</option>`).join('');
+// ---- subcontractors: pay type 'sub' + company. Same time rules as hourly; marked everywhere so payroll can tell them apart ----
+const isSub = e => !!e && e.pay_type === 'sub';
+const coOf = e => isSub(e) ? (e.company || '(no company)') : '';
+const payLabel = e => isSub(e) ? 'sub · ' + (e.company || 'no company') : e.pay_type;
+const subBadge = e => isSub(e) ? ` <span class="badge sub" title="Subcontractor — hours forwarded, not AIME payroll">SUB · ${esc(e.company || 'no company')}</span>` : '';
+const needCo = (pay, co) => { if (pay === 'sub' && !co) throw new Error('Enter the sub\'s company.'); return pay === 'sub' ? co : null; };
 async function loadClasses(){
   const { data, error } = await sb.from('job_classes').select('*').order('code');
   if (error){ classes = []; if (!loadClasses.warned){ loadClasses.warned = true; toast('Classifications not set up yet — run schema_patch5.sql in Supabase.', 7000); } return; }
@@ -419,6 +426,7 @@ function fillClassSelects(){
 }
 const fillSched = (sel, siteId) => sel.innerHTML = '<option value="">— none —</option>' + schedules.filter(s => s.site_id === siteId).map(s => `<option value="${s.id}">${esc(s.name)} ${String(s.start_time).slice(0,5)}–${String(s.end_time).slice(0,5)}</option>`).join('');
 $('eSite').onchange = () => fillSched($('eSched'), $('eSite').value);
+$('ePay').onchange = () => $('eCoWrap').classList.toggle('hidden', $('ePay').value !== 'sub');
 document.querySelectorAll('#nav button').forEach(b => b.onclick = () => showView(b.dataset.v));
 function showView(v){ document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.v === v)); document.querySelectorAll('.view').forEach(x => x.classList.toggle('hidden', x.id !== 'v-' + v));
   if (v === 'employees') renderEmployees(); if (v === 'sites') renderSites(); if (v === 'users') renderUsers(); if (v === 'audit') loadAudit(); if (v === 'archive') loadArchive(); }  // always refresh: other reviewers may have made changes since the tab was last opened
@@ -433,14 +441,14 @@ async function loadWeek(){
   const ws = Rules.weekStartOf($('rvDate').value), days = [...Array(7)].map((_, i) => Rules.addDays(ws, i));
   const from = Rules.zoned(Rules.addDays(ws, -1), '00:00', site.timezone).toISOString(), to = Rules.zoned(Rules.addDays(ws, 8), '00:00', site.timezone).toISOString();
   $('rvLoad').disabled = true;
-  const EMP_COLS = 'id,code,name,pay_type,active,site_id,schedule_id,class_id';
+  const EMP_COLS = 'id,code,name,pay_type,active,site_id,schedule_id,class_id,company';
   const [{ data: emps, error: eErr }, { data: punches, error }, { data: adjs }, { data: closes, error: cErr }] = await Promise.all([
     sb.from('employees').select(EMP_COLS).eq('site_id', site.id),
     sb.from('punches').select('*').eq('site_id', site.id).gte('ts', from).lt('ts', to).order('ts'),
     sb.from('day_adjustments').select('*').gte('work_date', ws).lte('work_date', days[6]),
     sb.from('week_closes').select('*').eq('site_id', site.id).eq('week_start', ws).order('closed_at', { ascending: false }) ]);
   $('rvLoad').disabled = false;
-  const err1 = error || eErr || cErr; if (err1){ toast(/class_id|week_closes/.test(err1.message) ? 'Run schema_patch5.sql in Supabase first — ' + err1.message : err1.message, 8000); return; }
+  const err1 = error || eErr || cErr; if (err1){ toast(/company/.test(err1.message) ? 'Run schema_patch6.sql in Supabase first — ' + err1.message : /class_id|week_closes/.test(err1.message) ? 'Run schema_patch5.sql in Supabase first — ' + err1.message : err1.message, 8000); return; }
   // include people who punched here but are now assigned elsewhere
   const ids = new Set(emps.map(e => e.id)); const extra = [...new Set(punches.map(p => p.employee_id))].filter(id => !ids.has(id));
   let more = []; if (extra.length){ const r = await sb.from('employees').select(EMP_COLS).in('id', extra); more = r.data || []; }
@@ -464,9 +472,9 @@ function renderWeek(){
   const { site, ws, rows } = RV; const tot = k => Rules.round2(rows.reduce((a, r) => a + (r.week[k]||0), 0));
   $('rvTitle').textContent = `${site.name} — week of ${ws}${RV.close ? ' (closed)' : ''}`;
   renderCloseBar();
-  $('rvKpi').innerHTML = `<div><b>${rows.length}</b><span>employees</span></div><div><b>${tot('paid')}</b><span>worked paid hrs</span></div><div><b>${tot('ot')}</b><span>OT hrs (1.5x)</span></div><div><b>${tot('pto')}</b><span>PTO hrs</span></div><div><b>${tot('ts2s')}</b><span>travel site&rarr;site hrs</span></div><div><b>${tot('th2s')}</b><span>travel home&rarr;site hrs</span></div><div><b>${rows.reduce((a,r)=>a+r.week.flagged,0)}</b><span>flagged days</span></div><div><b>${RV.punches.filter(p => p.flag && !p.reviewed).length}</b><span>punches to review</span></div>`;
+  $('rvKpi').innerHTML = `<div><b>${rows.length}</b><span>people${rows.some(r => isSub(r.emp)) ? ` (${rows.filter(r => isSub(r.emp)).length} subs)` : ''}</span></div><div><b>${tot('paid')}</b><span>worked paid hrs</span></div><div><b>${tot('ot')}</b><span>OT hrs (1.5x)</span></div><div><b>${tot('pto')}</b><span>PTO hrs</span></div><div><b>${tot('ts2s')}</b><span>travel site&rarr;site hrs</span></div><div><b>${tot('th2s')}</b><span>travel home&rarr;site hrs</span></div><div><b>${rows.reduce((a,r)=>a+r.week.flagged,0)}</b><span>flagged days</span></div><div><b>${RV.punches.filter(p => p.flag && !p.reviewed).length}</b><span>punches to review</span></div>`;
   $('rvWeek').innerHTML = `<tr><th>Employee</th><th>Schedule</th><th class="n">Days</th><th class="n">Worked</th><th class="n">Breaks</th><th class="n">Adj</th><th class="n">PTO</th><th class="n">Guar</th><th class="n">Regular</th><th class="n">OT</th><th class="n">Total paid</th><th class="n" title="Logged only, not in any total">Travel S&rarr;S</th><th class="n" title="Logged only, not in any total">Travel H&rarr;S</th><th class="n">Flags</th></tr>` +
-    rows.map((r, i) => `<tr class="click${RV_OPEN === r.emp.id ? ' sel' : ''}" data-i="${i}"><td><span class="caret">${RV_OPEN === r.emp.id ? '▾' : '▸'}</span><b>${esc(r.emp.name)}</b><br><span class="note">#${esc(r.emp.code||'')}${clsCode(r.emp.class_id) ? ' · <span class="code">' + esc(clsCode(r.emp.class_id)) + '</span>' : ''}${r.emp.site_id !== site.id ? ' · now at another site' : ''}${r.emp.active === false ? ' <span class="badge flag">inactive</span>' : ''}</span></td><td>${r.week.salary ? '<span class="badge">salary</span>' : esc((r.sched||{}).name || '—')}</td><td class="n">${r.week.days}</td><td class="n">${r.week.worked}</td><td class="n">${r.week.breaks}</td><td class="n">${r.week.adj||'-'}</td><td class="n">${r.week.pto||'-'}</td><td class="n">${r.week.guar||'-'}</td><td class="n">${r.week.reg}</td><td class="n">${r.week.ot ? '<b>'+r.week.ot+'</b>' : '-'}</td><td class="n">${r.week.total}</td><td class="n">${r.week.ts2s||'-'}</td><td class="n">${r.week.th2s||'-'}</td><td class="n">${r.week.flagged ? '<span class="badge flag">'+r.week.flagged+'</span>' : ''}</td></tr>` + (RV_OPEN === r.emp.id ? `<tr class="detail"><td colspan="14">${detailHtml(r)}</td></tr>` : '')).join('') +
+    rows.map((r, i) => `<tr class="click${RV_OPEN === r.emp.id ? ' sel' : ''}" data-i="${i}"><td><span class="caret">${RV_OPEN === r.emp.id ? '▾' : '▸'}</span><b>${esc(r.emp.name)}</b><br><span class="note">#${esc(r.emp.code||'')}${clsCode(r.emp.class_id) ? ' · <span class="code">' + esc(clsCode(r.emp.class_id)) + '</span>' : ''}${r.emp.site_id !== site.id ? ' · now at another site' : ''}${r.emp.active === false ? ' <span class="badge flag">inactive</span>' : ''}</span>${subBadge(r.emp)}</td><td>${r.week.salary ? '<span class="badge">salary</span>' : esc((r.sched||{}).name || '—')}</td><td class="n">${r.week.days}</td><td class="n">${r.week.worked}</td><td class="n">${r.week.breaks}</td><td class="n">${r.week.adj||'-'}</td><td class="n">${r.week.pto||'-'}</td><td class="n">${r.week.guar||'-'}</td><td class="n">${r.week.reg}</td><td class="n">${r.week.ot ? '<b>'+r.week.ot+'</b>' : '-'}</td><td class="n">${r.week.total}</td><td class="n">${r.week.ts2s||'-'}</td><td class="n">${r.week.th2s||'-'}</td><td class="n">${r.week.flagged ? '<span class="badge flag">'+r.week.flagged+'</span>' : ''}</td></tr>` + (RV_OPEN === r.emp.id ? `<tr class="detail"><td colspan="14">${detailHtml(r)}</td></tr>` : '')).join('') +
     `<tr><th>Total</th><th></th><th class="n">${rows.reduce((a,r)=>a+r.week.days,0)}</th><th class="n">${tot('worked')}</th><th class="n">${tot('breaks')}</th><th class="n">${tot('adj')}</th><th class="n">${tot('pto')}</th><th class="n">${tot('guar')}</th><th class="n">${tot('reg')}</th><th class="n">${tot('ot')}</th><th class="n">${tot('total')}</th><th class="n">${tot('ts2s')}</th><th class="n">${tot('th2s')}</th><th></th></tr>`;
   $('rvWeek').querySelectorAll('tr.click').forEach(tr => tr.onclick = () => { const id = RV.rows[+tr.dataset.i].emp.id; RV_OPEN = RV_OPEN === id ? null : id; renderWeek(); });
   const oi = RV.rows.findIndex(r => r.emp.id === RV_OPEN);
@@ -531,7 +539,7 @@ function renderFlags(){
 // ---- Excel export (Jibble-style timesheet + detail tabs) ----
 const TS = {
   REST_DAYS: [6],                          // 0 = Mon … 6 = Sun — shaded green when nobody worked
-  FILL: { holiday: 'FFFCE4D6', rest: 'FFE2EFDA', off: 'FFDDEBF7', head: 'FFF2F2F2' },
+  FILL: { holiday: 'FFFCE4D6', rest: 'FFE2EFDA', off: 'FFDDEBF7', head: 'FFF2F2F2', sub: 'FFE8E0F5' },
   HM: '[h]"h" mm"m";-[h]"h" mm"m";"-"',    // real time values shown as 9h 28m, zero shows "-"
   DEC: '0.00;-0.00;"-"'
 };
@@ -544,9 +552,9 @@ function tsSplit(r){
     return { reg: p - ot, ot, pto: Math.round((d.pto || 0) * 60), guar: Math.round((d.guar || 0) * 60), hol: /holiday/i.test((d.adjRow && d.adjRow.note) || '') };
   });
 }
-function buildTimesheet(wb, RV, who){
+function buildTimesheet(wb, RV, who, opt = {}){
   const { site, ws, rows, days } = RV;
-  const sh = wb.addWorksheet('Timesheet', { views: [{ state: 'frozen', xSplit: 3, ySplit: 7 }] });
+  const sh = wb.addWorksheet(opt.sheet || 'Timesheet', { views: [{ state: 'frozen', xSplit: 3, ySplit: 7 }] });
   sh.columns = [{width:26},{width:15},{width:17},{width:14},{width:14},{width:14},{width:14},{width:14},{width:14},{width:14},{width:14},{width:12},{width:10},{width:12},{width:12},{width:13},{width:13},{width:12}];
   const DC = ['D','E','F','G','H','I','J'], thin = { style: 'thin', color: { argb: 'FFD9D9D9' } }, grid = { top: thin, left: thin, bottom: thin, right: thin };
   const fill = argb => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
@@ -554,11 +562,11 @@ function buildTimesheet(wb, RV, who){
   const utc = dk => new Date(dk + 'T12:00:00Z');
   const fmtD = (dk, o) => utc(dk).toLocaleDateString('en-US', Object.assign({ timeZone: 'UTC' }, o));
   // title + legend
-  sh.getCell('A1').value = `${site.name} — Timesheet`; sh.getCell('A1').font = { bold: true, size: 14 };
+  sh.getCell('A1').value = `${site.name} — ${opt.title || 'Timesheet'}`; sh.getCell('A1').font = { bold: true, size: 14 };
   sh.getCell('A2').value = `Week ${fmtD(days[0], {weekday:'short', month:'short', day:'numeric'})} – ${fmtD(days[6], {weekday:'short', month:'short', day:'numeric', year:'numeric'})}  ·  exported ${new Date().toLocaleString('en-US')}${who ? ' by ' + who : ''}`;
   sh.getCell('A2').font = grey;
   sh.getRow(4).height = 30;
-  [['A4','Legend',null],['B4','Public holiday',TS.FILL.holiday],['D4','Rest day',TS.FILL.rest],['F4','Time off',TS.FILL.off]].forEach(([a, t, f]) => {
+  [['A4','Legend',null],['B4','Public holiday',TS.FILL.holiday],['D4','Rest day',TS.FILL.rest],['F4','Time off',TS.FILL.off]].concat(opt.subs ? [['H4','Subcontractor — not AIME payroll',TS.FILL.sub]] : []).forEach(([a, t, f]) => {
     const c = sh.getCell(a); c.value = t; c.font = { bold: true }; c.alignment = { vertical: 'bottom', horizontal: f ? 'center' : 'left', wrapText: true }; if (f) c.fill = fill(f); });
   // headers
   days.forEach((dk, i) => {
@@ -570,7 +578,7 @@ function buildTimesheet(wb, RV, who){
   // one 5-row block per employee
   const TYPES = ['Payroll Hours', 'Regular Hours', 'Weekly OT', 'PTO / Holiday', 'Guaranteed (straight)'];
   let r0 = 8;
-  const people = [...rows].sort((a, b) => a.emp.name.localeCompare(b.emp.name));
+  const people = [...rows].sort((a, b) => (opt.subs ? coOf(a.emp).localeCompare(coOf(b.emp)) : 0) || a.emp.name.localeCompare(b.emp.name));
   // cached results go with every formula so totals show in Excel's Protected View (it does not recalculate until Enable Editing)
   const GT = TYPES.map(() => 0);
   people.forEach(r => {
@@ -579,6 +587,7 @@ function buildTimesheet(wb, RV, who){
       const R = r0 + k, row = sh.getRow(R);
       row.getCell(3).value = t;
       if (k === 0){ row.getCell(1).value = r.emp.name; row.getCell(2).value = r.emp.code || ''; [1,2,3].forEach(n => row.getCell(n).font = { bold: true }); }
+      if (isSub(r.emp)){ row.getCell(1).fill = fill(TS.FILL.sub); row.getCell(2).fill = fill(TS.FILL.sub); if (k === 4){ row.getCell(1).value = 'SUB — ' + (r.emp.company || 'no company'); row.getCell(1).font = { bold: true, color: { argb: 'FF4B2F7A' }, size: 10 }; } }
       if (k === 1){ row.getCell(1).value = r.week.salary ? 'Salary — fixed 40 hrs' : ((r.sched || {}).name || 'No schedule'); row.getCell(1).font = grey; }
       if (k === 2 && r.emp.site_id !== site.id){ row.getCell(1).value = 'now at another site'; row.getCell(1).font = grey; }
       if (k === 3 && clsCode(r.emp.class_id)){ row.getCell(1).value = clsCode(r.emp.class_id); row.getCell(1).font = grey; }
@@ -604,7 +613,7 @@ function buildTimesheet(wb, RV, who){
   const last = r0 - 1; r0 += 1;
   TYPES.forEach((t, k) => {
     const R = r0 + k, row = sh.getRow(R);
-    if (k === 0){ row.getCell(1).value = `TOTAL — ${people.length} employees`; }
+    if (k === 0){ const ns = people.filter(r => isSub(r.emp)).length; row.getCell(1).value = `TOTAL — ${people.length} ${opt.subs ? (people.length === 1 ? 'sub' : 'subs') : 'employees'}`; }
     row.getCell(3).value = t;
     DC.concat(['K']).forEach((col, i) => { const c = row.getCell(col);
       const v = col === 'K' ? GT[k] : people.reduce((a, r) => { const x = tsSplit(r)[i]; return a + (k === 0 ? x.reg + x.ot + x.pto + x.guar : [x.reg, x.ot, x.pto, x.guar][k - 1]); }, 0) / 1440;
@@ -626,18 +635,32 @@ function addTable(wb, name, aoa){
 // builds the 4-tab workbook for the loaded week (used by Download Excel and by Close week, which archives it)
 function buildWorkbook(RV, closeInfo){
   const { site, ws, rows, days } = RV, tz = site.timezone;
-  const weekly = [['Employee','Emp #','Class','Site','Schedule','Week Start','Days','Hours Worked','Break Hrs Added','Adjustments','Worked Paid Hrs','PTO/Holiday Hrs','Guaranteed Hrs (straight)','Regular Hours','OT Hours (1.5x)','Total Paid Hrs','OT-Equivalent Hours','Flagged Days','Per Diem','Travel Site-to-Site Hrs','Travel Home-to-Site Hrs','Misc']];
-  rows.forEach(r => weekly.push([r.emp.name, r.emp.code, clsCode(r.emp.class_id), site.name, r.week.salary ? 'Salary' : (r.sched||{}).name || '', ws, r.week.days, r.week.worked, r.week.breaks, r.week.adj, r.week.paid, r.week.pto, r.week.guar, r.week.reg, r.week.ot, r.week.total, r.week.otEquiv, r.week.flagged, '', r.week.ts2s || 0, r.week.th2s || 0, '']));
-  const daily = [['Employee','Emp #','Class','Date','Day','Schedule','Punch In','Punch Out','Paid Start','Paid End','Lunch (min)','Hours Worked','Break Min Added','Adj Hours','PTO Hours','Guaranteed Hrs','Paid Hours (worked)','Travel Site-to-Site Hrs','Travel Home-to-Site Hrs','Flags']];
+  const weekly = [['Employee','Emp #','Class','Pay Type','Site','Schedule','Week Start','Days','Hours Worked','Break Hrs Added','Adjustments','Worked Paid Hrs','PTO/Holiday Hrs','Guaranteed Hrs (straight)','Regular Hours','OT Hours (1.5x)','Total Paid Hrs','OT-Equivalent Hours','Flagged Days','Per Diem','Travel Site-to-Site Hrs','Travel Home-to-Site Hrs','Misc']];
+  rows.filter(r => !isSub(r.emp)).forEach(r => weekly.push([r.emp.name, r.emp.code, clsCode(r.emp.class_id), r.emp.pay_type === 'salary' ? 'Salary' : 'Hourly', site.name, r.week.salary ? 'Salary' : (r.sched||{}).name || '', ws, r.week.days, r.week.worked, r.week.breaks, r.week.adj, r.week.paid, r.week.pto, r.week.guar, r.week.reg, r.week.ot, r.week.total, r.week.otEquiv, r.week.flagged, '', r.week.ts2s || 0, r.week.th2s || 0, '']));
+  const daily = [['Employee','Emp #','Class','Company','Date','Day','Schedule','Punch In','Punch Out','Paid Start','Paid End','Lunch (min)','Hours Worked','Break Min Added','Adj Hours','PTO Hours','Guaranteed Hrs','Paid Hours (worked)','Travel Site-to-Site Hrs','Travel Home-to-Site Hrs','Flags']];
+  const subDaily = [daily[0].slice()];
   rows.filter(r => !r.week.salary).forEach(r => r.days.forEach(d => { if (!d.punches.length && !d.pto && !d.adj && !d.guar && !d.ts2s && !d.th2s) return; const dn = new Date(d.dateKey + 'T12:00:00Z').toLocaleDateString('en-US', {weekday:'short', timeZone:'UTC'});
-    daily.push([r.emp.name, r.emp.code, clsCode(r.emp.class_id), d.dateKey, dn, (r.sched||{}).name || '', d.punchIn ? Rules.fmtTime(d.punchIn, tz) : '', d.punchOut ? Rules.fmtTime(d.punchOut, tz) : (d.autoClosed ? 'auto' : ''), d.paidStart ? Rules.fmtTime(d.paidStart, tz) : '', d.paidEnd ? Rules.fmtTime(d.paidEnd, tz) : '', d.lunchMin, d.worked, d.breakMin, d.adj, d.pto, d.guar || 0, d.paid, d.ts2s || 0, d.th2s || 0, d.flags.join('; ')]); }));
+    (isSub(r.emp) ? subDaily : daily).push([r.emp.name, r.emp.code, clsCode(r.emp.class_id), coOf(r.emp), d.dateKey, dn, (r.sched||{}).name || '', d.punchIn ? Rules.fmtTime(d.punchIn, tz) : '', d.punchOut ? Rules.fmtTime(d.punchOut, tz) : (d.autoClosed ? 'auto' : ''), d.paidStart ? Rules.fmtTime(d.paidStart, tz) : '', d.paidEnd ? Rules.fmtTime(d.paidEnd, tz) : '', d.lunchMin, d.worked, d.breakMin, d.adj, d.pto, d.guar || 0, d.paid, d.ts2s || 0, d.th2s || 0, d.flags.join('; ')]); }));
   const pun = [['Employee','Emp #','Work date','Date','Time','Type','Method','Flag','Reviewed','Device','Timestamp (UTC)']];
   RV.punches.forEach(p => { const e = rows.find(r => r.emp.id === p.employee_id); pun.push([e ? e.emp.name : p.employee_id, e ? e.emp.code : '', Rules.workDate(p.ts, e ? e.sched : null, tz), Rules.dayKey(p.ts, tz), Rules.fmtTime(p.ts, tz), p.type, p.method, p.flag || '', p.reviewed ? 'Y' : '', p.device_id || '', p.ts]); });
   const wb = new ExcelJS.Workbook(); wb.creator = 'AIME Time Clock'; wb.calcProperties.fullCalcOnLoad = true;
-  const ts = buildTimesheet(wb, RV, me && me.display_name);
+  const crew = rows.filter(r => !isSub(r.emp)), subs = rows.filter(r => isSub(r.emp));
+  const ts = buildTimesheet(wb, Object.assign({}, RV, { rows: crew }), me && me.display_name);
   if (closeInfo){ const c = ts.getCell('A3'); c.value = `CLOSED ${closeInfo.when} by ${closeInfo.by} — archived copy${closeInfo.note ? ' · ' + closeInfo.note : ''}`; c.font = { bold: true, color: { argb: 'FF1F3A4D' } }; }
-  addTable(wb, 'Weekly', weekly); addTable(wb, 'Daily', daily); addTable(wb, 'Punches', pun);
+  addTable(wb, 'Weekly', weekly); addTable(wb, 'Daily', daily);
+  if (subs.length){ buildTimesheet(wb, Object.assign({}, RV, { rows: subs }), me && me.display_name, { sheet: 'Subs', title: 'Subcontractor hours (not AIME payroll)', subs: true }); addTable(wb, 'Subs Daily', subDaily); addTable(wb, 'By Company', byCompany(rows)); }
+  addTable(wb, 'Punches', pun);
   return wb;
+}
+// totals per company: AIME's own crew first, then each sub company (same rules for everyone)
+function byCompany(rows){
+  const K = [['worked','Hours Worked'],['breaks','Break Hrs Added'],['adj','Adjustments'],['paid','Worked Paid Hrs'],['pto','PTO/Holiday Hrs'],['guar','Guaranteed Hrs (straight)'],['reg','Regular Hours'],['ot','OT Hours (1.5x)'],['total','Total Paid Hrs']];
+  const g = new Map(); rows.forEach(r => { const k = isSub(r.emp) ? 'Sub — ' + (r.emp.company || 'no company') : 'AIME (own crew)'; const x = g.get(k) || { n: 0 }; x.n++; K.forEach(([f]) => x[f] = Rules.round2((x[f] || 0) + (r.week[f] || 0))); g.set(k, x); });
+  const keys = [...g.keys()].sort((a, b) => (a[0] === 'A' ? '' : a).localeCompare(b[0] === 'A' ? '' : b));
+  const out = [['Company','People', ...K.map(k => k[1])]];
+  keys.forEach(k => out.push([k, g.get(k).n, ...K.map(([f]) => g.get(k)[f])]));
+  out.push(['TOTAL', rows.length, ...K.map(([f]) => Rules.round2(rows.reduce((a, r) => a + (r.week[f] || 0), 0)))]);
+  return out;
 }
 const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const weekFileName = (site, ws) => `${site.name.replace(/\W+/g,'_')}_Week_${ws}.xlsx`;
@@ -650,9 +673,10 @@ $('rvExport').onclick = async () => {
 // ---- week close-out (admins) ----
 function weekSummary(RV){
   const keys = ['days','worked','breaks','adj','pto','guar','paid','reg','ot','total','otEquiv','ts2s','th2s','flagged'];
-  const rows = RV.rows.map(r => Object.assign({ employee_id: r.emp.id, name: r.emp.name, code: r.emp.code || '', pay_type: r.emp.pay_type, class: clsCode(r.emp.class_id), schedule: r.week.salary ? 'Salary' : (r.sched || {}).name || '', other_site: r.emp.site_id !== RV.site.id },
+  const rows = RV.rows.map(r => Object.assign({ employee_id: r.emp.id, name: r.emp.name, code: r.emp.code || '', pay_type: r.emp.pay_type, company: r.emp.company || '', class: clsCode(r.emp.class_id), schedule: r.week.salary ? 'Salary' : (r.sched || {}).name || '', other_site: r.emp.site_id !== RV.site.id },
     Object.fromEntries(keys.map(k => [k, Rules.round2(r.week[k] || 0)]))));
-  const totals = Object.fromEntries(keys.map(k => [k, Rules.round2(rows.reduce((a, x) => a + (x[k] || 0), 0))])); totals.employees = rows.length;
+  const crew = rows.filter(x => x.pay_type !== 'sub'), subs = rows.filter(x => x.pay_type === 'sub');
+  const totals = Object.fromEntries(keys.map(k => [k, Rules.round2(crew.reduce((a, x) => a + (x[k] || 0), 0))])); totals.employees = crew.length; totals.subs = subs.length; totals.subs_total = Rules.round2(subs.reduce((a, x) => a + (x.total || 0), 0));
   return { site: RV.site.name, timezone: RV.site.timezone, week_start: RV.ws, totals, rows };
 }
 const fmtWhen = iso => new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -686,7 +710,7 @@ async function closeWeek(){
   const n = re => allDays.filter(d => d.flags.some(f => re.test(f))).length;
   const warn = [[RV.punches.filter(p => p.flag && !p.reviewed).length, 'tablet punches still waiting for review (Needs attention)'], [n(/Still punched in/), 'people still showing as punched in'], [n(/MISSED PUNCH-OUT/), 'missed punch-outs (auto-closed at scheduled end)'], [n(/not approved/), 'late punch-outs not approved'], [n(/NO SCHEDULE/), 'days with no schedule assigned']].filter(([k]) => k);
   const s = weekSummary(RV);
-  const html = `<div class="note"><b>${esc(site.name)} — week of ${ws}</b><br>${s.totals.employees} employees · ${s.totals.total} total paid hrs · ${s.totals.ot} OT hrs · ${s.totals.pto} PTO hrs</div>
+  const html = `<div class="note"><b>${esc(site.name)} — week of ${ws}</b><br>${s.totals.employees} employees · ${s.totals.total} total paid hrs · ${s.totals.ot} OT hrs · ${s.totals.pto} PTO hrs${s.totals.subs ? `<br>Plus ${s.totals.subs} subs · ${s.totals.subs_total} hrs (on the Subs tab, not in payroll totals)` : ''}</div>
     ${warn.length ? `<div class="banner warn" style="margin:0;display:block"><b>Check before closing:</b><ul style="margin:6px 0 0 18px">${warn.map(([k, t]) => `<li>${k} ${t}</li>`).join('')}</ul></div>` : '<div class="note">No open items found.</div>'}
     <div class="note">Closing locks every punch and added-time entry in this week for everyone, and saves the totals and the Excel file to the Archive permanently. An admin can reopen it later with a note.</div>
     <label class="f">Note (optional)<textarea data-cn placeholder="e.g. Sent to payroll Oct 14"></textarea></label>`;
@@ -716,19 +740,22 @@ async function reopenWeek(){
 let EMP_SEL = new Set(), EMP_LIST = [];
 $('eSearch').oninput = () => drawEmployees(); $('eFilter').onchange = () => drawEmployees(); $('eClassF').onchange = () => drawEmployees();
 async function renderEmployees(){
-  const [{ data, error }, cls] = await Promise.all([sb.rpc('list_all_employees'), sb.rpc('employee_class_ids')]);
+  const [{ data, error }, cls, cos] = await Promise.all([sb.rpc('list_all_employees'), sb.rpc('employee_class_ids'), sb.rpc('employee_companies')]);
   if (error){ toast(error.message); return; } employeesAll = data || [];
   if (cls.error){ if (!renderEmployees.warned){ renderEmployees.warned = true; toast('Classifications not set up yet — run schema_patch5.sql in Supabase.', 7000); } }
   else { const m = new Map((cls.data || []).map(x => [x.id, x])); employeesAll.forEach(e => { const x = m.get(e.id); e.class_id = x ? x.class_id : null; }); }
+  if (cos.error){ if (!renderEmployees.warnedCo){ renderEmployees.warnedCo = true; toast('Subs not set up yet — run schema_patch6.sql in Supabase.', 7000); } }
+  else { const m = new Map((cos.data || []).map(x => [x.id, x.company])); employeesAll.forEach(e => { if (m.has(e.id)) e.company = m.get(e.id); }); }
+  $('coList').innerHTML = [...new Set(employeesAll.filter(isSub).map(e => e.company).filter(Boolean))].sort().map(c => `<option value="${esc(c)}">`).join('');
   if (isAdmin()) renderClasses();
   drawEmployees();
 }
 function drawEmployees(){
   const q = $('eSearch').value.trim().toLowerCase(), f = $('eFilter').value, mine = new Set(mySites().map(s => s.id)), cf = $('eClassF').value;
   const byCls = (val, fv) => !fv || (fv === 'none' ? !val : val === fv);
-  const list = EMP_LIST = employeesAll.filter(e => (f === 'all' ? e.active : f === 'inactive' ? !e.active : f === 'unassigned' ? (e.active && !e.site_id) : (e.active && mine.has(e.site_id)))).filter(e => !q || e.name.toLowerCase().includes(q) || (e.code||'').toLowerCase().includes(q)).filter(e => byCls(e.class_id, cf));
+  const list = EMP_LIST = employeesAll.filter(e => (f === 'all' ? e.active : f === 'inactive' ? !e.active : f === 'unassigned' ? (e.active && !e.site_id) : f === 'subs' ? (e.active && isSub(e)) : f === 'crew' ? (e.active && !isSub(e)) : (e.active && mine.has(e.site_id)))).filter(e => !q || e.name.toLowerCase().includes(q) || (e.code||'').toLowerCase().includes(q) || (e.company||'').toLowerCase().includes(q)).filter(e => byCls(e.class_id, cf));
   const adm = isAdmin(), allOn = list.length && list.every(e => EMP_SEL.has(e.id));
-  $('empTable').innerHTML = `<tr>${adm ? `<th><input type="checkbox" id="eChkAll" ${allOn ? 'checked' : ''} title="Select everyone shown"></th>` : ''}<th>Employee</th><th>#</th><th>Class</th><th>Pay</th><th>Site</th><th>Schedule</th><th>Face</th><th></th></tr>` + list.map(e => `<tr>${adm ? `<td><input type="checkbox" data-chk="${e.id}" ${EMP_SEL.has(e.id) ? 'checked' : ''}></td>` : ''}<td><b>${esc(e.name)}</b></td><td>${esc(e.code||'')}</td><td>${clsCode(e.class_id) ? `<span class="code" title="${esc((clsById(e.class_id) || {}).description || '')}">${esc(clsCode(e.class_id))}</span>` : '<span class="note">—</span>'}</td><td>${e.pay_type}</td><td>${esc((siteById(e.site_id)||{}).name || '—')}</td><td>${esc((schedById(e.schedule_id)||{}).name || '—')}</td><td>${e.enrolled ? '<span class="badge ok">enrolled</span>' + (isAdmin() ? ` <button class="btn sm ghost" data-unface="${e.id}">Remove</button>` : '') : '<span class="badge">not yet</span>'}</td><td style="white-space:nowrap"><button class="btn sm ghost" data-assign="${e.id}">Assign</button> ${isAdmin() ? `<button class="btn sm ghost" data-edit="${e.id}">Edit</button>` : ''}</td></tr>`).join('') || '<tr><td class="note">No one matches.</td></tr>';
+  $('empTable').innerHTML = `<tr>${adm ? `<th><input type="checkbox" id="eChkAll" ${allOn ? 'checked' : ''} title="Select everyone shown"></th>` : ''}<th>Employee</th><th>#</th><th>Class</th><th>Pay</th><th>Site</th><th>Schedule</th><th>Face</th><th></th></tr>` + list.map(e => `<tr>${adm ? `<td><input type="checkbox" data-chk="${e.id}" ${EMP_SEL.has(e.id) ? 'checked' : ''}></td>` : ''}<td><b>${esc(e.name)}</b></td><td>${esc(e.code||'')}</td><td>${clsCode(e.class_id) ? `<span class="code" title="${esc((clsById(e.class_id) || {}).description || '')}">${esc(clsCode(e.class_id))}</span>` : '<span class="note">—</span>'}</td><td>${isSub(e) ? `<span class="badge sub">sub</span> ${esc(e.company || 'no company')}` : e.pay_type}</td><td>${esc((siteById(e.site_id)||{}).name || '—')}</td><td>${esc((schedById(e.schedule_id)||{}).name || '—')}</td><td>${e.enrolled ? '<span class="badge ok">enrolled</span>' + (isAdmin() ? ` <button class="btn sm ghost" data-unface="${e.id}">Remove</button>` : '') : '<span class="badge">not yet</span>'}</td><td style="white-space:nowrap"><button class="btn sm ghost" data-assign="${e.id}">Assign</button> ${isAdmin() ? `<button class="btn sm ghost" data-edit="${e.id}">Edit</button>` : ''}</td></tr>`).join('') || '<tr><td class="note">No one matches.</td></tr>';
   $('empTable').querySelectorAll('[data-assign]').forEach(b => b.onclick = () => assignEmp(employeesAll.find(e => e.id === b.dataset.assign)));
   $('empTable').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => editEmp(employeesAll.find(e => e.id === b.dataset.edit)));
   $('empTable').querySelectorAll('[data-unface]').forEach(b => b.onclick = () => removeFace(employeesAll.find(e => e.id === b.dataset.unface)));
@@ -787,16 +814,21 @@ async function assignEmp(e){
   await done;
 }
 async function editEmp(e){
-  await modal('Edit employee', `<div class="row"><label class="f">Name<input type="text" data-name value="${esc(e.name)}"></label><label class="f">Employee #<input type="text" data-code value="${esc(e.code||'')}"></label></div><div class="row"><label class="f">Pay type<select data-pay><option value="hourly" ${e.pay_type==='hourly'?'selected':''}>Hourly</option><option value="salary" ${e.pay_type==='salary'?'selected':''}>Salary</option></select></label><label class="f">Status<select data-active><option value="true" ${e.active?'selected':''}>Active</option><option value="false" ${!e.active?'selected':''}>Inactive (face data deleted)</option></select></label></div><div class="row"><label class="f">Class<select data-class>${clsOpts(e.class_id)}</select></label></div>` + noteField(), async m => {
+  const done = modal('Edit employee', `<div class="row"><label class="f">Name<input type="text" data-name value="${esc(e.name)}"></label><label class="f">Employee #<input type="text" data-code value="${esc(e.code||'')}"></label></div><div class="row"><label class="f">Pay type<select data-pay><option value="hourly" ${e.pay_type==='hourly'?'selected':''}>Hourly</option><option value="salary" ${e.pay_type==='salary'?'selected':''}>Salary</option><option value="sub" ${e.pay_type==='sub'?'selected':''}>Sub (subcontractor)</option></select></label><label class="f" data-cowrap>Company (sub)<input type="text" data-co list="coList" value="${esc(e.company||'')}"></label><label class="f">Status<select data-active><option value="true" ${e.active?'selected':''}>Active</option><option value="false" ${!e.active?'selected':''}>Inactive (face data deleted)</option></select></label></div><div class="row"><label class="f">Class<select data-class>${clsOpts(e.class_id)}</select></label></div>` + noteField(), async m => {
     const note = needNote(m); const upd = { name: m.querySelector('[data-name]').value.trim(), code: m.querySelector('[data-code]').value.trim() || null, pay_type: m.querySelector('[data-pay]').value, active: m.querySelector('[data-active]').value === 'true', class_id: m.querySelector('[data-class]').value || null };
+    upd.company = needCo(upd.pay_type, m.querySelector('[data-co]').value.trim());
     if (!upd.active) upd.face_descs = null; const { error } = await sb.from('employees').update(upd).eq('id', e.id); if (error) throw new Error(error.message);
     await audit('employee_edited', e.id, e, upd, note); toast('Saved'); renderEmployees(); });
+  const m = document.querySelector('.modal:last-of-type'), ps = m.querySelector('[data-pay]'), cw = m.querySelector('[data-cowrap]');
+  const sh = () => cw.classList.toggle('hidden', ps.value !== 'sub'); sh(); ps.onchange = sh;
+  await done;
 }
 $('eAdd').onclick = async () => {
   const name = $('eName').value.trim(); if (!name){ toast('Name is required'); return; }
-  const row = { name, code: $('eCode').value.trim() || null, pay_type: $('ePay').value, site_id: $('eSite').value || null, schedule_id: $('eSched').value || null, class_id: $('eClass').value || null };
+  let company; try { company = needCo($('ePay').value, $('eCo').value.trim()); } catch (er) { toast(er.message); return; }
+  const row = { name, code: $('eCode').value.trim() || null, pay_type: $('ePay').value, company, site_id: $('eSite').value || null, schedule_id: $('eSched').value || null, class_id: $('eClass').value || null };
   const { data, error } = await sb.from('employees').insert(row).select().single(); if (error){ toast(error.message); return; }
-  await audit('employee_added', data.id, null, row, 'added on review page'); $('eName').value = ''; $('eCode').value = ''; $('eClass').value = ''; toast(name + ' added'); renderEmployees();
+  await audit('employee_added', data.id, null, row, 'added on review page'); $('eName').value = ''; $('eCode').value = ''; $('eClass').value = ''; $('eCo').value = ''; toast(name + ' added'); renderEmployees();
 };
 
 // ========== SITES ==========
@@ -852,18 +884,18 @@ function renderArchive(){
   $('arTable').querySelectorAll('[data-aro]').forEach(b => b.onclick = () => { const c = AR[+b.dataset.aro]; if (!siteById(c.site_id)){ toast('You no longer have access to that site.'); return; } showView('review'); $('rvSite').value = c.site_id; $('rvDate').value = c.week_start; loadWeek(); });
   $('arTable').querySelectorAll('[data-arv]').forEach(b => b.onclick = () => { const c = AR[+b.dataset.arv], s = c.summary || {}, rows = [...(s.rows || [])].sort((a, b) => a.name.localeCompare(b.name));
     const m = document.createElement('div'); m.className = 'modal';
-    m.innerHTML = `<div class="box wide"><h2>${esc(s.site || '')} — week of ${c.week_start}</h2><div class="note">As closed ${esc(fmtWhen(c.closed_at))} by ${esc(c.closed_by_name || '?')}${c.reopened_at ? ' · later reopened' : ''}.</div><div class="tableWrap"><table><tr><th>Employee</th><th>#</th><th>Class</th><th>Schedule</th><th class="n">Worked</th><th class="n">Breaks</th><th class="n">Adj</th><th class="n">Regular</th><th class="n">OT</th><th class="n">PTO</th><th class="n">Guar</th><th class="n">Total</th><th class="n">Travel S→S</th><th class="n">Travel H→S</th></tr>${rows.map(r => `<tr><td>${esc(r.name)}</td><td>${esc(r.code)}</td><td class="code">${esc(r.class || '')}</td><td>${esc(r.schedule)}</td><td class="n">${r.worked}</td><td class="n">${r.breaks}</td><td class="n">${r.adj || '-'}</td><td class="n">${r.reg}</td><td class="n">${r.ot || '-'}</td><td class="n">${r.pto || '-'}</td><td class="n">${r.guar || '-'}</td><td class="n"><b>${r.total}</b></td><td class="n">${r.ts2s || '-'}</td><td class="n">${r.th2s || '-'}</td></tr>`).join('')}<tr><th colspan="4">Total — ${(s.totals || {}).employees || 0} employees</th>${['worked','breaks','adj','reg','ot','pto','guar','total','ts2s','th2s'].map(k => `<th class="n">${(s.totals || {})[k] ?? ''}</th>`).join('')}</tr></table></div><div class="row" style="justify-content:flex-end"><button class="btn ghost" data-x>Close</button></div></div>`;
+    m.innerHTML = `<div class="box wide"><h2>${esc(s.site || '')} — week of ${c.week_start}</h2><div class="note">As closed ${esc(fmtWhen(c.closed_at))} by ${esc(c.closed_by_name || '?')}${c.reopened_at ? ' · later reopened' : ''}.</div><div class="tableWrap"><table><tr><th>Employee</th><th>#</th><th>Class</th><th>Schedule</th><th class="n">Worked</th><th class="n">Breaks</th><th class="n">Adj</th><th class="n">Regular</th><th class="n">OT</th><th class="n">PTO</th><th class="n">Guar</th><th class="n">Total</th><th class="n">Travel S→S</th><th class="n">Travel H→S</th></tr>${rows.map(r => `<tr><td>${esc(r.name)}${r.pay_type === 'sub' ? subBadge(r) : ''}</td><td>${esc(r.code)}</td><td class="code">${esc(r.class || '')}</td><td>${esc(r.schedule)}</td><td class="n">${r.worked}</td><td class="n">${r.breaks}</td><td class="n">${r.adj || '-'}</td><td class="n">${r.reg}</td><td class="n">${r.ot || '-'}</td><td class="n">${r.pto || '-'}</td><td class="n">${r.guar || '-'}</td><td class="n"><b>${r.total}</b></td><td class="n">${r.ts2s || '-'}</td><td class="n">${r.th2s || '-'}</td></tr>`).join('')}<tr><th colspan="4">Total — ${(s.totals || {}).employees || 0} employees${(s.totals || {}).subs ? ` <span class="note">(${s.totals.subs} subs, ${s.totals.subs_total} hrs, not included)</span>` : ''}</th>${['worked','breaks','adj','reg','ot','pto','guar','total','ts2s','th2s'].map(k => `<th class="n">${(s.totals || {})[k] ?? ''}</th>`).join('')}</tr></table></div><div class="row" style="justify-content:flex-end"><button class="btn ghost" data-x>Close</button></div></div>`;
     document.body.appendChild(m); m.querySelector('[data-x]').onclick = () => m.remove(); m.onclick = e => { if (e.target === m) m.remove(); }; });
 }
 function renderArchiveEmp(){
   const q = $('arEmp').value.trim().toLowerCase(), tr = $('arClass').value;
   AR_HITS = []; $('arEmpXls').disabled = true;
   if (!q && !tr){ $('arEmpTable').innerHTML = '<tr><td class="note">Type a name or employee # (or pick a class) to see week-by-week hours from the closed weeks above.</td></tr>'; return; }
-  const hits = AR_HITS = []; arActive().forEach(c => ((c.summary || {}).rows || []).forEach(r => { if ((!q || r.name.toLowerCase().includes(q) || String(r.code || '').toLowerCase().includes(q)) && (!tr || r.class === tr)) hits.push({ c, r }); }));
+  const hits = AR_HITS = []; arActive().forEach(c => ((c.summary || {}).rows || []).forEach(r => { if ((!q || r.name.toLowerCase().includes(q) || String(r.code || '').toLowerCase().includes(q) || String(r.company || '').toLowerCase().includes(q)) && (!tr || r.class === tr)) hits.push({ c, r }); }));
   hits.sort((a, b) => a.r.name.localeCompare(b.r.name) || b.c.week_start.localeCompare(a.c.week_start));
   $('arEmpXls').disabled = !hits.length;
   const sum = k => Rules.round2(hits.reduce((a, h) => a + (h.r[k] || 0), 0)), people = new Set(hits.map(h => h.r.employee_id)).size;
-  $('arEmpTable').innerHTML = `<tr><th>Employee</th><th>Week of</th><th>Site</th><th>Class</th><th class="n">Days</th><th class="n">Regular</th><th class="n">OT</th><th class="n">PTO</th><th class="n">Total paid</th></tr>` + hits.slice(0, 500).map(({ c, r }) => `<tr><td><b>${esc(r.name)}</b> <span class="note">#${esc(r.code)}</span></td><td>${c.week_start}</td><td>${esc((c.summary || {}).site || '')}</td><td class="code">${esc(r.class || '')}</td><td class="n">${r.days}</td><td class="n">${r.reg}</td><td class="n">${r.ot || '-'}</td><td class="n">${r.pto || '-'}</td><td class="n"><b>${r.total}</b></td></tr>`).join('') +
+  $('arEmpTable').innerHTML = `<tr><th>Employee</th><th>Week of</th><th>Site</th><th>Class</th><th class="n">Days</th><th class="n">Regular</th><th class="n">OT</th><th class="n">PTO</th><th class="n">Total paid</th></tr>` + hits.slice(0, 500).map(({ c, r }) => `<tr><td><b>${esc(r.name)}</b> <span class="note">#${esc(r.code)}</span>${r.pay_type === 'sub' ? subBadge(r) : ''}</td><td>${c.week_start}</td><td>${esc((c.summary || {}).site || '')}</td><td class="code">${esc(r.class || '')}</td><td class="n">${r.days}</td><td class="n">${r.reg}</td><td class="n">${r.ot || '-'}</td><td class="n">${r.pto || '-'}</td><td class="n"><b>${r.total}</b></td></tr>`).join('') +
     (hits.length ? `<tr><th colspan="4">Total — ${people} ${people === 1 ? 'person' : 'people'}, ${hits.length} person-weeks${hits.length > 500 ? ' (first 500 rows shown)' : ''}</th><th class="n">${sum('days')}</th><th class="n">${sum('reg')}</th><th class="n">${sum('ot')}</th><th class="n">${sum('pto')}</th><th class="n">${sum('total')}</th></tr>` : '<tr><td class="note" colspan="9">No matches in the closed weeks listed above.</td></tr>');
 }
 $('arEmpXls').onclick = async () => {
@@ -871,7 +903,7 @@ $('arEmpXls').onclick = async () => {
   const q = $('arEmp').value.trim(), tr = $('arClass').value, R = AR_RANGE;
   const keys = [['days','Days'],['worked','Hours Worked'],['breaks','Break Hrs Added'],['adj','Adjustments'],['reg','Regular Hours'],['ot','OT Hours (1.5x)'],['pto','PTO/Holiday Hrs'],['guar','Guaranteed Hrs (straight)'],['total','Total Paid Hrs'],['otEquiv','OT-Equivalent Hours'],['ts2s','Travel Site-to-Site Hrs'],['th2s','Travel Home-to-Site Hrs']];
   // per person totals
-  const by = new Map(); AR_HITS.forEach(({ c, r }) => { const x = by.get(r.employee_id) || { name: r.name, code: r.code, cls: r.class || '', weeks: 0, sites: new Set(), first: c.week_start, last: c.week_start };
+  const by = new Map(); AR_HITS.forEach(({ c, r }) => { const x = by.get(r.employee_id) || { name: r.name, code: r.code, co: r.pay_type === 'sub' ? (r.company || '(no company)') : '', cls: r.class || '', weeks: 0, sites: new Set(), first: c.week_start, last: c.week_start };
     x.weeks++; x.sites.add((c.summary || {}).site || ''); x.cls = x.last <= c.week_start ? (r.class || '') : x.cls;
     if (c.week_start < x.first) x.first = c.week_start; if (c.week_start > x.last) x.last = c.week_start;
     keys.forEach(([k]) => x[k] = Rules.round2((x[k] || 0) + (r[k] || 0))); by.set(r.employee_id, x); });
@@ -880,13 +912,13 @@ $('arEmpXls').onclick = async () => {
   const sum = wb.addWorksheet('Summary');
   const info = [`Hours report — closed pay weeks from ${R.from} to ${R.to}`, `Site: ${R.site}${q ? ' · Search: ' + q : ''}${tr ? ' · Class: ' + tr : ''}`, `Exported ${new Date().toLocaleString('en-US')} by ${me.display_name}. Only weeks closed in the Archive are included; a week counts if any of it falls in the range.`];
   info.forEach((t, i) => { const c = sum.getCell(i + 1, 1); c.value = t; c.font = i ? { color: { argb: 'FF7F7F7F' }, size: 10 } : { bold: true, size: 14 }; });
-  const head = ['Employee','Emp #','Class (latest)','Sites','Weeks','First week','Last week', ...keys.map(k => k[1])];
+  const head = ['Employee','Emp #','Company (subs)','Class (latest)','Sites','Weeks','First week','Last week', ...keys.map(k => k[1])];
   const hr = sum.getRow(5); head.forEach((h, i) => { const c = hr.getCell(i + 1); c.value = h; c.font = { bold: true }; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } }; });
-  people.forEach((x, i) => sum.getRow(6 + i).values = [x.name, x.code, x.cls, [...x.sites].join(', '), x.weeks, x.first, x.last, ...keys.map(([k]) => x[k] || 0)]);
-  if (people.length > 1){ const tr2 = sum.getRow(6 + people.length); tr2.getCell(1).value = `TOTAL — ${people.length} people`; for (let i = 0; i <= keys.length; i++){ const col = 5 + i, L = sum.getColumn(col).letter; tr2.getCell(col).value = { formula: `SUM(${L}6:${L}${5 + people.length})`, result: i ? Rules.round2(people.reduce((a, x) => a + (x[keys[i-1][0]] || 0), 0)) : people.reduce((a, x) => a + x.weeks, 0) }; } tr2.font = { bold: true }; }
-  sum.views = [{ state: 'frozen', ySplit: 5 }]; head.forEach((h, i) => sum.getColumn(i + 1).width = i === 0 ? 24 : i === 3 ? 18 : Math.max(10, h.length + 2));
-  const hist = [['Employee','Emp #','Week of','Site','Class','Schedule', ...keys.map(k => k[1]), 'Closed by', 'Closed on']];
-  AR_HITS.forEach(({ c, r }) => hist.push([r.name, r.code, c.week_start, (c.summary || {}).site || '', r.class || '', r.schedule, ...keys.map(([k]) => r[k] || 0), c.closed_by_name || '', fmtWhen(c.closed_at)]));
+  people.forEach((x, i) => sum.getRow(6 + i).values = [x.name, x.code, x.co, x.cls, [...x.sites].join(', '), x.weeks, x.first, x.last, ...keys.map(([k]) => x[k] || 0)]);
+  if (people.length > 1){ const tr2 = sum.getRow(6 + people.length); tr2.getCell(1).value = `TOTAL — ${people.length} people`; for (let i = 0; i <= keys.length; i++){ const col = 6 + i, L = sum.getColumn(col).letter; tr2.getCell(col).value = { formula: `SUM(${L}6:${L}${5 + people.length})`, result: i ? Rules.round2(people.reduce((a, x) => a + (x[keys[i-1][0]] || 0), 0)) : people.reduce((a, x) => a + x.weeks, 0) }; } tr2.font = { bold: true }; }
+  sum.views = [{ state: 'frozen', ySplit: 5 }]; head.forEach((h, i) => sum.getColumn(i + 1).width = i === 0 ? 24 : i === 4 ? 18 : Math.max(10, h.length + 2));
+  const hist = [['Employee','Emp #','Company (subs)','Week of','Site','Class','Schedule', ...keys.map(k => k[1]), 'Closed by', 'Closed on']];
+  AR_HITS.forEach(({ c, r }) => hist.push([r.name, r.code, r.pay_type === 'sub' ? (r.company || '(no company)') : '', c.week_start, (c.summary || {}).site || '', r.class || '', r.schedule, ...keys.map(([k]) => r[k] || 0), c.closed_by_name || '', fmtWhen(c.closed_at)]));
   addTable(wb, 'Week by week', hist);
   const buf = await wb.xlsx.writeBuffer();
   const who = people.length === 1 ? people[0].name.replace(/\W+/g, '_') : (tr ? 'Class_' + tr : 'Employees').replace(/\W+/g, '_');
@@ -912,7 +944,7 @@ async function loadAudit(){
   renderAudit();
 }
 const friendly = a => ({punch_edited:'Punch time changed', punch_added:'Punch added', punch_removed:'Punch deleted', punch_reviewed:'Fallback punch confirmed', punch_reassigned:'Punch reassigned', day_adjustment:'Time approved / adjusted', employee_assigned:'Employee assigned', employee_added:'Employee added', employee_edited:'Employee edited', enroll:'Face enrolled', face_removed:'Face data removed', schedule_changed:'Schedule changed', schedule_added:'Schedule added', schedule_edited:'Schedule edited', schedule_deleted:'Schedule deleted', site_settings:'Site settings', user_created:'User created', user_edited:'User edited', user_deleted:'User deleted', user_sites:'User sites changed', pin_set:'PIN set', user_disabled:'User disabled', user_enabled:'User enabled', kiosk_supervisor_open:'Supervisor opened kiosk', week_closed:'Pay week closed', week_reopened:'Pay week reopened', employees_classified:'Class set', classification_added:'Class code added', classification_edited:'Class code changed'}[a] || a);
-const fmtVal = v => { if (v == null) return ''; if (typeof v !== 'object') return String(v); const keep = ['ts','type','adj_hours','pto_hours','approved_late','site_id','schedule_id','name','code','pay_type','active','role','display_name','lockout_min','grace_min','shots','to','class_id','description','count','names','employees','total','ot','closed_at']; return Object.entries(v).filter(([k]) => keep.includes(k)).map(([k,x]) => `${k === 'class_id' ? 'class' : k}: ${k === 'ts' || k === 'closed_at' ? new Date(x).toLocaleString() : k === 'site_id' ? (siteById(x)||{}).name || x : k === 'schedule_id' || k === 'to' ? (schedById(x)||{}).name || x : k === 'class_id' ? (x ? clsCode(x) || x : '(none)') : x}`).join(', '); };
+const fmtVal = v => { if (v == null) return ''; if (typeof v !== 'object') return String(v); const keep = ['ts','type','adj_hours','pto_hours','approved_late','site_id','schedule_id','name','code','pay_type','company','active','role','display_name','lockout_min','grace_min','shots','to','class_id','description','count','names','employees','total','ot','closed_at']; return Object.entries(v).filter(([k]) => keep.includes(k)).map(([k,x]) => `${k === 'class_id' ? 'class' : k}: ${k === 'ts' || k === 'closed_at' ? new Date(x).toLocaleString() : k === 'site_id' ? (siteById(x)||{}).name || x : k === 'schedule_id' || k === 'to' ? (schedById(x)||{}).name || x : k === 'class_id' ? (x ? clsCode(x) || x : '(none)') : x}`).join(', '); };
 function renderAudit(){
   const q = $('auQ').value.trim().toLowerCase();
   const list = AU.filter(r => !q || [r.actor_name, r.action, friendly(r.action), r.target_name, r.note].join(' ').toLowerCase().includes(q));
