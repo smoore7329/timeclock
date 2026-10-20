@@ -101,6 +101,7 @@
       <div class="banner" id="rvClose"></div>
       <div class="kpi" id="rvKpi"></div>
       <div class="card"><h2 id="rvTitle">Week</h2><div class="tableWrap"><table id="rvWeek"></table></div><div class="note" style="margin-top:8px">Tap a name to open that person's punches right under their name (tap again to close). Regular hours include PTO; only worked time counts toward the 40.</div></div>
+      <div class="card"><h2>Late punch-outs to approve</h2><div class="flagsList" id="rvLate"></div></div>
       <div class="card"><h2>Needs attention</h2><div class="flagsList" id="rvFlags"></div></div>
     </div>
   </div>
@@ -313,7 +314,7 @@ const Rules = (() => {
     if (schedEnd && lastEnd > schedEnd){
       const overMin = (lastEnd - schedEnd)/60000;
       if (adj && adj.approved_late){ flags.push('Late out approved'); }
-      else { paidEnd = schedEnd; if (overMin > grace) flags.push(`Late out ${fmtTime(lastEnd,tz)} not approved`); }
+      else { paidEnd = schedEnd; if (overMin > grace){ if (adj && adj.late_unpaid) flags.push(`Late out ${fmtTime(lastEnd,tz)} left unpaid`); else { flags.push(`Late out ${fmtTime(lastEnd,tz)} not approved`); out.lateOut = { at: lastEnd, schedEnd, overMin: Math.round(overMin) }; } } }
     }
     // gaps (lunch etc.)
     let gapMin = 0;
@@ -472,14 +473,36 @@ function renderWeek(){
   const { site, ws, rows } = RV; const tot = k => Rules.round2(rows.reduce((a, r) => a + (r.week[k]||0), 0));
   $('rvTitle').textContent = `${site.name} — week of ${ws}${RV.close ? ' (closed)' : ''}`;
   renderCloseBar();
-  $('rvKpi').innerHTML = `<div><b>${rows.length}</b><span>people${rows.some(r => isSub(r.emp)) ? ` (${rows.filter(r => isSub(r.emp)).length} subs)` : ''}</span></div><div><b>${tot('paid')}</b><span>worked paid hrs</span></div><div><b>${tot('ot')}</b><span>OT hrs (1.5x)</span></div><div><b>${tot('pto')}</b><span>PTO hrs</span></div><div><b>${tot('ts2s')}</b><span>travel site&rarr;site hrs</span></div><div><b>${tot('th2s')}</b><span>travel home&rarr;site hrs</span></div><div><b>${rows.reduce((a,r)=>a+r.week.flagged,0)}</b><span>flagged days</span></div><div><b>${RV.punches.filter(p => p.flag && !p.reviewed).length}</b><span>punches to review</span></div>`;
+  $('rvKpi').innerHTML = `<div><b>${rows.length}</b><span>people${rows.some(r => isSub(r.emp)) ? ` (${rows.filter(r => isSub(r.emp)).length} subs)` : ''}</span></div><div><b>${tot('paid')}</b><span>worked paid hrs</span></div><div><b>${tot('ot')}</b><span>OT hrs (1.5x)</span></div><div><b>${tot('pto')}</b><span>PTO hrs</span></div><div><b>${tot('ts2s')}</b><span>travel site&rarr;site hrs</span></div><div><b>${tot('th2s')}</b><span>travel home&rarr;site hrs</span></div><div><b>${rows.reduce((a,r)=>a+r.week.flagged,0)}</b><span>flagged days</span></div><div><b>${lateItems().length}</b><span>late outs to approve</span></div><div><b>${RV.punches.filter(p => p.flag && !p.reviewed).length}</b><span>punches to review</span></div>`;
   $('rvWeek').innerHTML = `<tr><th>Employee</th><th>Schedule</th><th class="n">Days</th><th class="n">Worked</th><th class="n">Breaks</th><th class="n">Adj</th><th class="n">PTO</th><th class="n">Guar</th><th class="n">Regular</th><th class="n">OT</th><th class="n">Total paid</th><th class="n" title="Logged only, not in any total">Travel S&rarr;S</th><th class="n" title="Logged only, not in any total">Travel H&rarr;S</th><th class="n">Flags</th></tr>` +
     rows.map((r, i) => `<tr class="click${RV_OPEN === r.emp.id ? ' sel' : ''}" data-i="${i}"><td><span class="caret">${RV_OPEN === r.emp.id ? '▾' : '▸'}</span><b>${esc(r.emp.name)}</b><br><span class="note">#${esc(r.emp.code||'')}${clsCode(r.emp.class_id) ? ' · <span class="code">' + esc(clsCode(r.emp.class_id)) + '</span>' : ''}${r.emp.site_id !== site.id ? ' · now at another site' : ''}${r.emp.active === false ? ' <span class="badge flag">inactive</span>' : ''}</span>${subBadge(r.emp)}</td><td>${r.week.salary ? '<span class="badge">salary</span>' : esc((r.sched||{}).name || '—')}</td><td class="n">${r.week.days}</td><td class="n">${r.week.worked}</td><td class="n">${r.week.breaks}</td><td class="n">${r.week.adj||'-'}</td><td class="n">${r.week.pto||'-'}</td><td class="n">${r.week.guar||'-'}</td><td class="n">${r.week.reg}</td><td class="n">${r.week.ot ? '<b>'+r.week.ot+'</b>' : '-'}</td><td class="n">${r.week.total}</td><td class="n">${r.week.ts2s||'-'}</td><td class="n">${r.week.th2s||'-'}</td><td class="n">${r.week.flagged ? '<span class="badge flag">'+r.week.flagged+'</span>' : ''}</td></tr>` + (RV_OPEN === r.emp.id ? `<tr class="detail"><td colspan="14">${detailHtml(r)}</td></tr>` : '')).join('') +
     `<tr><th>Total</th><th></th><th class="n">${rows.reduce((a,r)=>a+r.week.days,0)}</th><th class="n">${tot('worked')}</th><th class="n">${tot('breaks')}</th><th class="n">${tot('adj')}</th><th class="n">${tot('pto')}</th><th class="n">${tot('guar')}</th><th class="n">${tot('reg')}</th><th class="n">${tot('ot')}</th><th class="n">${tot('total')}</th><th class="n">${tot('ts2s')}</th><th class="n">${tot('th2s')}</th><th></th></tr>`;
   $('rvWeek').querySelectorAll('tr.click').forEach(tr => tr.onclick = () => { const id = RV.rows[+tr.dataset.i].emp.id; RV_OPEN = RV_OPEN === id ? null : id; renderWeek(); });
   const oi = RV.rows.findIndex(r => r.emp.id === RV_OPEN);
   if (oi >= 0) $('rvWeek').querySelectorAll('tr.detail button[data-a]').forEach(b => b.onclick = e => { e.stopPropagation(); (b.dataset.a === 'punches' ? editPunches : editTime)(RV.rows[oi], +b.dataset.d); });
-  renderFlags();
+  renderFlags(); renderLate();
+}
+function lateItems(){
+  const out = [];
+  RV.rows.forEach(r => { if (r.week.salary) return; r.days.forEach((d, di) => { if (d.lateOut) out.push({ r, d, di }); }); });
+  return out.sort((a, b) => a.d.dateKey.localeCompare(b.d.dateKey) || a.r.emp.name.localeCompare(b.r.emp.name));
+}
+function renderLate(){
+  const tz = RV.site.timezone, list = lateItems();
+  const dn = k => new Date(k + 'T12:00:00Z').toLocaleDateString(undefined, {weekday:'short', month:'numeric', day:'numeric', timeZone:'UTC'});
+  $('rvLate').innerHTML = list.length ? list.map(({ r, d }, i) => `<div class="flagItem"><div style="flex:1"><b>${esc(r.emp.name)}</b> — ${dn(d.dateKey)}${subBadge(r.emp)}<br>Scheduled end <b>${Rules.fmtTime(d.lateOut.schedEnd, tz)}</b> &middot; punched out <b>${Rules.fmtTime(d.lateOut.at, tz)}</b> &middot; <span class="badge flag">${d.lateOut.overMin} min over</span><br><span class="note">${esc((r.sched||{}).name || '')}${RV.close ? ' · paid to scheduled end' : ' · paid to scheduled end until approved'}</span></div>${RV.close ? '' : `<div style="display:flex;flex-direction:column;gap:6px"><button class="btn sm ok" data-lap="${i}">Approve</button><button class="btn sm ghost" data-lun="${i}">Leave unpaid</button></div>`}</div>`).join('') + (RV.close ? '<div class="note">Week closed — these were closed as unpaid. Pay any correction in an open week.</div>' : '')
+    : '<div class="note">No late punch-outs waiting. Anything past scheduled end plus the grace window shows up here until it is approved or left unpaid.</div>';
+  $('rvLate').querySelectorAll('[data-lap]').forEach(b => b.onclick = () => { const it = list[+b.dataset.lap]; editTime(it.r, it.di, { approve: true }); });
+  $('rvLate').querySelectorAll('[data-lun]').forEach(b => b.onclick = () => leaveUnpaid(list[+b.dataset.lun]));
+}
+async function leaveUnpaid({ r, d }){
+  const tz = RV.site.timezone, a = d.adjRow || {};
+  await modal('Leave late punch-out unpaid', `<div class="note">${esc(r.emp.name)} — ${d.dateKey}. Punched out ${Rules.fmtTime(d.lateOut.at, tz)}, ${d.lateOut.overMin} min after scheduled end. Pay stays at scheduled end and this drops off the list. You can still approve it later with Edit / approve extra time.</div>` + noteField(), async m => {
+    const note = needNote(m);
+    const row = { employee_id: r.emp.id, work_date: d.dateKey, approved_late: false, late_unpaid: true, adj_hours: +a.adj_hours || 0, pto_hours: +a.pto_hours || 0, travel_s2s_hours: +a.travel_s2s_hours || 0, travel_h2s_hours: +a.travel_h2s_hours || 0, note, updated_by: me.user_id };
+    const { error } = await sb.from('day_adjustments').upsert(row, { onConflict: 'employee_id,work_date' }); if (error) throw new Error(/late_unpaid/.test(error.message) ? 'Run schema_patch7.sql in Supabase first — ' + error.message : error.message);
+    await audit('late_left_unpaid', r.emp.id + ':' + d.dateKey, a.id ? a : null, row, note); toast('Left unpaid'); loadWeek();
+  }, 'Leave unpaid');
 }
 function detailHtml(r){
   const tz = RV.site.timezone, w = r.week;
@@ -513,16 +536,16 @@ async function editPunches(r, di){
     toast('Saved'); loadWeek();
   });
 }
-async function editTime(r, di){
+async function editTime(r, di, opts = {}){
   const d = r.days[di], a = d.adjRow || {};
   const html = `<div class="note">${r.emp.name} — ${d.dateKey}. Paying a correction for a week that's already closed? Enter the hours here and say in the note which week it corrects.</div>
-    <label class="f"><span><input type="checkbox" data-appr ${a.approved_late ? 'checked' : ''}> Approve time past scheduled end (pay to actual punch-out)</span></label>
+    <label class="f"><span><input type="checkbox" data-appr ${a.approved_late || opts.approve ? 'checked' : ''}> Approve time past scheduled end (pay to actual punch-out)</span></label>${a.late_unpaid && !a.approved_late ? '<div class="note">This day\'s late punch-out was marked <b>left unpaid</b>. Tick the box above to pay it instead.</div>' : ''}
     <div class="row"><label class="f">Adjust worked hours (+/-, counts toward OT)<input type="number" step="0.25" data-adj value="${a.adj_hours || 0}"></label><label class="f">PTO / holiday hours (straight time, no OT)<input type="number" step="0.25" min="0" data-pto value="${a.pto_hours || 0}"></label></div>
     <div class="row"><label class="f">Travel hours — site to site (logged only, not in any total)<input type="number" step="0.25" min="0" data-ts2s value="${a.travel_s2s_hours || 0}"></label><label class="f">Travel hours — home to site (logged only, not in any total)<input type="number" step="0.25" min="0" data-th2s value="${a.travel_h2s_hours || 0}"></label></div>` + noteField();
   await modal('Edit / approve extra time', html, async m => {
-    const note = needNote(m); const row = { employee_id: r.emp.id, work_date: d.dateKey, approved_late: m.querySelector('[data-appr]').checked, adj_hours: +m.querySelector('[data-adj]').value || 0, pto_hours: +m.querySelector('[data-pto]').value || 0, travel_s2s_hours: +m.querySelector('[data-ts2s]').value || 0, travel_h2s_hours: +m.querySelector('[data-th2s]').value || 0, note, updated_by: me.user_id };
+    const note = needNote(m); const row = { employee_id: r.emp.id, work_date: d.dateKey, approved_late: m.querySelector('[data-appr]').checked, late_unpaid: m.querySelector('[data-appr]').checked ? false : !!a.late_unpaid, adj_hours: +m.querySelector('[data-adj]').value || 0, pto_hours: +m.querySelector('[data-pto]').value || 0, travel_s2s_hours: +m.querySelector('[data-ts2s]').value || 0, travel_h2s_hours: +m.querySelector('[data-th2s]').value || 0, note, updated_by: me.user_id };
     if (row.travel_s2s_hours < 0 || row.travel_h2s_hours < 0) throw new Error('Travel hours can\'t be negative.');
-    const { error } = await sb.from('day_adjustments').upsert(row, { onConflict: 'employee_id,work_date' }); if (error) throw new Error(error.message);
+    const { error } = await sb.from('day_adjustments').upsert(row, { onConflict: 'employee_id,work_date' }); if (error) throw new Error(/late_unpaid/.test(error.message) ? 'Run schema_patch7.sql in Supabase first — ' + error.message : error.message);
     await audit('day_adjustment', r.emp.id + ':' + d.dateKey, a.id ? a : null, row, note); toast('Saved'); loadWeek();
   });
 }
@@ -943,8 +966,8 @@ async function loadAudit(){
   AU.forEach(r => { if (!r.target_name && r.target){ const m = String(r.target).match(/^(.+):(\d{4}-\d{2}-\d{2})$/); if (m){ const e = employeesAll.find(x => x.id === m[1]), s = siteById(m[1]); r.target_name = (e ? e.name : s ? s.name : m[1]) + ' — ' + m[2]; } } });
   renderAudit();
 }
-const friendly = a => ({punch_edited:'Punch time changed', punch_added:'Punch added', punch_removed:'Punch deleted', punch_reviewed:'Fallback punch confirmed', punch_reassigned:'Punch reassigned', day_adjustment:'Time approved / adjusted', employee_assigned:'Employee assigned', employee_added:'Employee added', employee_edited:'Employee edited', enroll:'Face enrolled', face_removed:'Face data removed', schedule_changed:'Schedule changed', schedule_added:'Schedule added', schedule_edited:'Schedule edited', schedule_deleted:'Schedule deleted', site_settings:'Site settings', user_created:'User created', user_edited:'User edited', user_deleted:'User deleted', user_sites:'User sites changed', pin_set:'PIN set', user_disabled:'User disabled', user_enabled:'User enabled', kiosk_supervisor_open:'Supervisor opened kiosk', week_closed:'Pay week closed', week_reopened:'Pay week reopened', employees_classified:'Class set', classification_added:'Class code added', classification_edited:'Class code changed'}[a] || a);
-const fmtVal = v => { if (v == null) return ''; if (typeof v !== 'object') return String(v); const keep = ['ts','type','adj_hours','pto_hours','approved_late','site_id','schedule_id','name','code','pay_type','company','active','role','display_name','lockout_min','grace_min','shots','to','class_id','description','count','names','employees','total','ot','closed_at']; return Object.entries(v).filter(([k]) => keep.includes(k)).map(([k,x]) => `${k === 'class_id' ? 'class' : k}: ${k === 'ts' || k === 'closed_at' ? new Date(x).toLocaleString() : k === 'site_id' ? (siteById(x)||{}).name || x : k === 'schedule_id' || k === 'to' ? (schedById(x)||{}).name || x : k === 'class_id' ? (x ? clsCode(x) || x : '(none)') : x}`).join(', '); };
+const friendly = a => ({punch_edited:'Punch time changed', punch_added:'Punch added', punch_removed:'Punch deleted', punch_reviewed:'Fallback punch confirmed', punch_reassigned:'Punch reassigned', day_adjustment:'Time approved / adjusted', late_left_unpaid:'Late out left unpaid', employee_assigned:'Employee assigned', employee_added:'Employee added', employee_edited:'Employee edited', enroll:'Face enrolled', face_removed:'Face data removed', schedule_changed:'Schedule changed', schedule_added:'Schedule added', schedule_edited:'Schedule edited', schedule_deleted:'Schedule deleted', site_settings:'Site settings', user_created:'User created', user_edited:'User edited', user_deleted:'User deleted', user_sites:'User sites changed', pin_set:'PIN set', user_disabled:'User disabled', user_enabled:'User enabled', kiosk_supervisor_open:'Supervisor opened kiosk', week_closed:'Pay week closed', week_reopened:'Pay week reopened', employees_classified:'Class set', classification_added:'Class code added', classification_edited:'Class code changed'}[a] || a);
+const fmtVal = v => { if (v == null) return ''; if (typeof v !== 'object') return String(v); const keep = ['ts','type','adj_hours','pto_hours','approved_late','late_unpaid','site_id','schedule_id','name','code','pay_type','company','active','role','display_name','lockout_min','grace_min','shots','to','class_id','description','count','names','employees','total','ot','closed_at']; return Object.entries(v).filter(([k]) => keep.includes(k)).map(([k,x]) => `${k === 'class_id' ? 'class' : k}: ${k === 'ts' || k === 'closed_at' ? new Date(x).toLocaleString() : k === 'site_id' ? (siteById(x)||{}).name || x : k === 'schedule_id' || k === 'to' ? (schedById(x)||{}).name || x : k === 'class_id' ? (x ? clsCode(x) || x : '(none)') : x}`).join(', '); };
 function renderAudit(){
   const q = $('auQ').value.trim().toLowerCase();
   const list = AU.filter(r => !q || [r.actor_name, r.action, friendly(r.action), r.target_name, r.note].join(' ').toLowerCase().includes(q));
