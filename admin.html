@@ -178,6 +178,10 @@
         <div class="note" style="margin-bottom:10px">Billed per person for each day they worked at the site. Leave a site out, or set 0, for no per diem.</div>
         <div class="tableWrap"><table id="biPd"></table></div>
         <div class="row" style="margin-top:10px"><label class="f">Site<select id="biPSite"></select></label><label class="f">Per day ($)<input type="number" step="0.01" min="0" id="biPAmt"></label><label class="f">Starts<input type="date" id="biPFrom"></label><button class="btn ghost" id="biPAdd">Add per diem</button></div></div>
+      <div class="card"><h2>Who can see billing</h2>
+        <div class="note" style="margin-bottom:10px">Only the people listed here see the Billing tab (each unlocks it with their own password). Only the billing manager can add or remove people. New people need a review-page login first — add one on the Users tab.</div>
+        <div class="tableWrap"><table id="biPeople"></table></div>
+        <div class="row" style="margin-top:10px" id="biAddRow"><label class="f">Add person<select id="biAddWho"></select></label><button class="btn ghost" id="biAddGo">Give billing access</button></div></div>
     </div>
   </div>
 
@@ -1126,7 +1130,7 @@ function biShow(){
   const u = biUnlocked(); $('biLock').classList.toggle('hidden', !!u); $('biBody').classList.toggle('hidden', !u);
   if (u) loadRates(); else { $('biPass').value = ''; setTimeout(() => $('biPass').focus(), 50); }
 }
-function biLock(){ BI_UNLOCKED = 0; BI = null; BI_RATES = []; BI_PD = []; ['biTable','biClass','biRates','biPd','biKpi','biWarn'].forEach(id => $(id).innerHTML = ''); $('biWeek').classList.add('hidden'); $('biExport').disabled = true; biShow(); }
+function biLock(){ BI_UNLOCKED = 0; BI = null; BI_RATES = []; BI_PD = []; ['biTable','biClass','biRates','biPd','biKpi','biWarn','biPeople','biAddWho'].forEach(id => $(id).innerHTML = ''); $('biWeek').classList.add('hidden'); $('biExport').disabled = true; biShow(); }
 setInterval(() => { if (BI_UNLOCKED && !biUnlocked()) biLock(); }, 20000);
 ['click', 'input', 'keydown'].forEach(ev => $('biBody').addEventListener(ev, () => { if (biUnlocked()) BI_UNLOCKED = Date.now(); }));
 $('biGo').onclick = async () => {
@@ -1147,7 +1151,7 @@ async function loadRates(){
   const [a, b] = await Promise.all([sb.from('billing_rates').select('*').order('effective_from', { ascending: false }), sb.from('billing_per_diem').select('*').order('effective_from', { ascending: false })]);
   const err = a.error || b.error;
   if (err){ toast(/billing_/.test(err.message) ? 'Run schema_patch8.sql in Supabase first — ' + err.message : err.message, 8000); return; }
-  BI_RATES = a.data || []; BI_PD = b.data || [];
+  BI_RATES = a.data || []; BI_PD = b.data || []; loadBillPeople();
   $('biRClass').innerHTML = '<option value="">— pick a class —</option>' + classes.filter(c => c.active).map(c => `<option value="${c.id}">${esc(c.code)}${c.description ? ' — ' + esc(c.description) : ''}</option>`).join('');
   renderRates();
 }
@@ -1189,6 +1193,28 @@ $('biPAdd').onclick = async () => {
   const { error } = await sb.from('billing_per_diem').insert({ site_id, amount: +amount, effective_from });
   if (error){ toast(/duplicate|unique/.test(error.message) ? 'That site already has a per diem starting that day — delete it first.' : error.message, 6000); return; }
   $('biPAmt').value = ''; toast('Per diem added'); await loadRates(); if (BI) biReload();
+};
+
+// ---- who can see billing (schema_patch10.sql) ----
+async function loadBillPeople(){
+  const { data, error } = await sb.rpc('billing_people');
+  if (error){ $('biPeople').innerHTML = `<tr><td class="note">${esc(/billing_people|function/.test(error.message) ? 'Run schema_patch10.sql in Supabase to manage this list here.' : error.message)}</td></tr>`; $('biAddWho').innerHTML = ''; $('biAddGo').disabled = true; return; }
+  const on = data.filter(x => x.has_access), off = data.filter(x => !x.has_access), mgr = on.some(x => x.user_id === me.user_id && x.is_manager);
+  $('biAddRow').classList.toggle('hidden', !mgr);
+  $('biPeople').innerHTML = `<tr><th>Name</th><th>Login</th><th>Role</th><th>Added</th><th></th></tr>` + on.map(x => `<tr><td><b>${esc(x.display_name)}</b>${x.user_id === me.user_id ? ' <span class="note">(you)</span>' : ''}</td><td class="note">${esc(x.email)}</td><td>${esc(x.role)}${x.is_manager ? ' <span class="badge cur">manager</span>' : ''}</td><td class="note">${x.added_at ? esc(fmtWhen(x.added_at)) : ''}</td><td>${!mgr || x.is_manager ? '' : `<button class="btn sm ghost" data-brm="${x.user_id}">Remove</button>`}</td></tr>`).join('');
+  $('biAddWho').innerHTML = off.length ? '<option value="">— pick a person —</option>' + off.map(x => `<option value="${x.user_id}">${esc(x.display_name)} (${esc(x.role)}) — ${esc(x.email)}</option>`).join('') : '<option value="">Everyone with a login already has access</option>';
+  $('biAddGo').disabled = !off.length;
+  $('biPeople').querySelectorAll('[data-brm]').forEach(b => b.onclick = async () => { const x = on.find(p => p.user_id === b.dataset.brm);
+    if (!confirm(`Remove billing access for ${x.display_name}? The Billing tab disappears for them the next time they load the page.`)) return;
+    const { error } = await sb.rpc('billing_revoke', { p_user: x.user_id }); if (error){ toast(error.message, 6000); return; }
+    await audit('billing_access_removed', x.user_id, null, null, ''); toast('Removed'); loadBillPeople(); });
+}
+$('biAddGo').onclick = async () => {
+  const id = $('biAddWho').value; if (!id){ toast('Pick a person.'); return; }
+  const name = $('biAddWho').selectedOptions[0].textContent.split(' (')[0];
+  if (!confirm(`Give ${name} access to Billing? They will see all billing rates, per diem and billing totals for every site.`)) return;
+  const { error } = await sb.rpc('billing_grant', { p_user: id }); if (error){ toast(error.message, 6000); return; }
+  await audit('billing_access_added', id, null, null, ''); toast(name + ' can now see Billing'); loadBillPeople();
 };
 
 $('biLoad').onclick = () => biReload(true);
@@ -1290,7 +1316,7 @@ async function loadAudit(){
   AU.forEach(r => { if (!r.target_name && r.target){ const m = String(r.target).match(/^(.+):(\d{4}-\d{2}-\d{2})$/); if (m){ const e = employeesAll.find(x => x.id === m[1]), s = siteById(m[1]); r.target_name = (e ? e.name : s ? s.name : m[1]) + ' — ' + m[2]; } } });
   renderAudit();
 }
-const friendly = a => ({punch_edited:'Punch time changed', punch_added:'Punch added', punch_removed:'Punch deleted', punch_reviewed:'Fallback punch confirmed', punch_reassigned:'Punch reassigned', day_adjustment:'Time approved / adjusted', late_left_unpaid:'Late out left unpaid', employee_assigned:'Employee assigned', employee_added:'Employee added', employee_edited:'Employee edited', enroll:'Face enrolled', face_removed:'Face data removed', schedule_changed:'Schedule changed', schedule_added:'Schedule added', schedule_edited:'Schedule edited', schedule_deleted:'Schedule deleted', site_settings:'Site settings', user_created:'User created', user_edited:'User edited', user_deleted:'User deleted', user_sites:'User sites changed', pin_set:'PIN set', password_changed:'Changed own password', password_set:'Password set by admin', user_disabled:'User disabled', user_enabled:'User enabled', kiosk_supervisor_open:'Supervisor opened kiosk', week_closed:'Pay week closed', week_reopened:'Pay week reopened', employees_classified:'Class set', classification_added:'Class code added', classification_edited:'Class code changed'}[a] || a);
+const friendly = a => ({punch_edited:'Punch time changed', punch_added:'Punch added', punch_removed:'Punch deleted', punch_reviewed:'Fallback punch confirmed', punch_reassigned:'Punch reassigned', day_adjustment:'Time approved / adjusted', late_left_unpaid:'Late out left unpaid', employee_assigned:'Employee assigned', employee_added:'Employee added', employee_edited:'Employee edited', enroll:'Face enrolled', face_removed:'Face data removed', schedule_changed:'Schedule changed', schedule_added:'Schedule added', schedule_edited:'Schedule edited', schedule_deleted:'Schedule deleted', site_settings:'Site settings', user_created:'User created', user_edited:'User edited', user_deleted:'User deleted', user_sites:'User sites changed', pin_set:'PIN set', password_changed:'Changed own password', password_set:'Password set by admin', billing_access_added:'Billing access given', billing_access_removed:'Billing access removed', user_disabled:'User disabled', user_enabled:'User enabled', kiosk_supervisor_open:'Supervisor opened kiosk', week_closed:'Pay week closed', week_reopened:'Pay week reopened', employees_classified:'Class set', classification_added:'Class code added', classification_edited:'Class code changed'}[a] || a);
 const fmtVal = v => { if (v == null) return ''; if (typeof v !== 'object') return String(v); const keep = ['ts','type','adj_hours','pto_hours','approved_late','late_unpaid','site_id','schedule_id','name','code','pay_type','company','active','role','display_name','lockout_min','grace_min','shots','to','class_id','description','count','names','employees','total','ot','closed_at']; return Object.entries(v).filter(([k]) => keep.includes(k)).map(([k,x]) => `${k === 'class_id' ? 'class' : k}: ${k === 'ts' || k === 'closed_at' ? new Date(x).toLocaleString() : k === 'site_id' ? (siteById(x)||{}).name || x : k === 'schedule_id' || k === 'to' ? (schedById(x)||{}).name || x : k === 'class_id' ? (x ? clsCode(x) || x : '(none)') : x}`).join(', '); };
 function renderAudit(){
   const q = $('auQ').value.trim().toLowerCase();
