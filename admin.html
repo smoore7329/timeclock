@@ -781,7 +781,7 @@ $('rvExport').onclick = async () => {
 // ---- week close-out (admins) ----
 function weekSummary(RV){
   const keys = ['days','worked','breaks','adj','pto','guar','paid','reg','ot','total','otEquiv','ts2s','th2s','flagged'];
-  const rows = RV.rows.map(r => Object.assign({ employee_id: r.emp.id, name: r.emp.name, code: r.emp.code || '', pay_type: r.emp.pay_type, company: r.emp.company || '', class: clsCode(r.emp.class_id), schedule: r.week.salary ? 'Salary' : (r.sched || {}).name || '', other_site: r.emp.site_id !== RV.site.id },
+  const rows = RV.rows.map(r => Object.assign({ employee_id: r.emp.id, name: r.emp.name, code: r.emp.code || '', pay_type: r.emp.pay_type, company: r.emp.company || '', class: clsCode(r.emp.class_id), class_id: r.emp.class_id || null, salary: !!r.week.salary, daily: r.days.map(d => ({ d: d.dateKey, paid: Rules.round2(d.paid || 0), worked: Rules.round2(d.worked || 0) })), schedule: r.week.salary ? 'Salary' : (r.sched || {}).name || '', other_site: r.emp.site_id !== RV.site.id },
     Object.fromEntries(keys.map(k => [k, Rules.round2(r.week[k] || 0)]))));
   const crew = rows.filter(x => x.pay_type !== 'sub'), subs = rows.filter(x => x.pay_type === 'sub');
   const totals = Object.fromEntries(keys.map(k => [k, Rules.round2(crew.reduce((a, x) => a + (x[k] || 0), 0))])); totals.employees = crew.length; totals.subs = subs.length; totals.subs_total = Rules.round2(subs.reduce((a, x) => a + (x.total || 0), 0));
