@@ -67,6 +67,11 @@
   .clsItem{display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)} .clsItem b{flex:0 0 64px;font-family:ui-monospace,Menlo,Consolas,monospace} .clsItem .d{flex:1} .clsItem.off b,.clsItem.off .d{color:var(--muted);font-weight:400;text-decoration:line-through}
   .code{font-family:ui-monospace,Menlo,Consolas,monospace;font-weight:700;letter-spacing:.03em}
   .lockNote{color:var(--muted);font-size:13px;white-space:normal}
+  .hcGroup th{background:#eef3f7;color:var(--ink);font-size:14px}
+  .badge.lunch{background:#fff1d6;color:#7a4a12}
+  .money{font-variant-numeric:tabular-nums;white-space:nowrap}
+  .lockCard{max-width:420px;margin:30px auto;display:flex;flex-direction:column;gap:12px}
+  .badge.cur{background:#d9f2e3;color:#1e6b41}
   @media (max-width:700px){ th,td{padding:6px 5px;font-size:13px} main{padding:10px} }
 </style>
 </head>
@@ -74,7 +79,7 @@
 <header class="top">
   <span class="brand">AIME · Time Clock</span>
   <nav id="nav" class="hidden">
-    <button data-v="review" class="on">Review</button><button data-v="employees">Employees</button><button data-v="sites">Sites</button><button data-v="users" id="navUsers">Users</button><button data-v="archive">Archive</button><button data-v="audit">Audit log</button>
+    <button data-v="review" class="on">Review</button><button data-v="headcount">Headcount</button><button data-v="employees">Employees</button><button data-v="sites">Sites</button><button data-v="users" id="navUsers">Users</button><button data-v="archive">Archive</button><button data-v="billing" id="navBill" class="hidden">Billing</button><button data-v="audit">Audit log</button>
   </nav>
   <span class="who" id="whoami"></span>
   <button class="btn ghost sm hidden" id="btnOut">Sign out</button>
@@ -115,13 +120,65 @@
       <label class="f">Site<select id="eSite"></select></label><label class="f">Schedule<select id="eSched"></select></label>
       <label class="f">Class<select id="eClass"></select></label>
       <button class="btn" id="eAdd">Add</button></div></div>
-    <div class="card"><div class="row"><label class="f">Search<input type="text" id="eSearch" placeholder="name, # or sub company"></label><label class="f">Show<select id="eFilter"><option value="mine">My sites</option><option value="unassigned">Unassigned</option><option value="all">Everyone</option><option value="inactive">Inactive</option><option value="subs">Subs only</option><option value="crew">AIME crew only</option></select></label><label class="f">Class<select id="eClassF"></select></label></div>
+    <div class="card"><div class="row"><label class="f">Search<input type="text" id="eSearch" placeholder="name, # or sub company"></label><label class="f">Show<select id="eFilter"><option value="mine">My sites</option><option value="unassigned">Unassigned</option><option value="all">Everyone</option><option value="inactive">Inactive</option><option value="subs">Subs only</option><option value="crew">AIME crew only</option></select></label><label class="f">Site<select id="eSiteF"></select></label><label class="f">Class<select id="eClassF"></select></label></div>
       <div class="row hidden bulk" id="eBulk"><span><b id="eBulkN">0</b> selected</span><label class="f">Set class<select id="eBulkC"></select></label><button class="btn" id="eBulkGo">Apply to selected</button><button class="btn ghost" id="eBulkX">Clear selection</button></div>
       <div class="tableWrap"><table id="empTable"></table></div></div>
     <div class="card hidden" id="clsCard"><h2>Job classifications</h2>
       <div class="note" style="margin-bottom:10px">The codes in the Class dropdown — exactly 4 letters or numbers, e.g. ELEC, MECH, ELAP (electrician apprentice), ELJM (electrician journeyman). Hiding a code keeps it on past records and closed weeks but takes it out of the dropdown. Only admins can change this list or set an employee's class.</div>
       <div id="clsList"></div>
       <div class="row" style="margin-top:10px"><label class="f" style="flex:0 0 110px;min-width:0">Code<input type="text" id="clsNewCode" maxlength="4" placeholder="ELJM" style="text-transform:uppercase"></label><label class="f">Description<input type="text" id="clsNewDesc" placeholder="Electrician journeyman"></label><button class="btn ghost" id="clsAdd">Add code</button></div></div>
+  </div>
+
+  <!-- HEADCOUNT -->
+  <div id="v-headcount" class="view hidden">
+    <div class="card"><div class="row">
+      <label class="f">Site<select id="hcSite"></select></label>
+      <button class="btn" id="hcLoad">Refresh</button>
+      <button class="btn ghost" id="hcCopy" disabled>Copy list</button>
+      <label class="f">Email to (optional, remembered per site)<input type="text" id="hcTo" placeholder="name@company.com; other@company.com"></label>
+      <button class="btn ghost" id="hcMail" disabled>Email</button>
+    </div>
+      <div class="note" style="margin-top:6px">Who is at this site right now, AIME crew and subs, for an emergency roll call. People punched out for lunch are counted (they may still be nearby). A tablet that is offline sends its punches when it reconnects, so check the tablet times at the bottom.</div></div>
+    <div id="hcBody" class="hidden">
+      <div class="kpi" id="hcKpi"></div>
+      <div class="card"><h2 id="hcTitle">On site</h2><div class="tableWrap"><table id="hcTable"></table></div></div>
+      <div class="card hidden" id="hcGoneCard"><h2>Not counted — still punched in long after their shift</h2><div class="note" style="margin-bottom:8px">Punched in, never punched out, and more than 2 hours past their scheduled end. Most likely a missed punch-out, but check if unsure.</div><div class="tableWrap"><table id="hcGone"></table></div></div>
+      <div class="card"><h3>Tablets — most recent punch received</h3><div id="hcDev" class="note"></div></div>
+    </div>
+  </div>
+
+  <!-- BILLING (private) -->
+  <div id="v-billing" class="view hidden">
+    <div class="card lockCard" id="biLock">
+      <h2>Labor billing</h2>
+      <div class="note">Billing rates are private. Enter your password to open this tab. It locks again when you leave the tab or after 15 minutes without use.</div>
+      <input type="password" id="biPass" placeholder="Your password" autocomplete="current-password">
+      <button class="btn" id="biGo">Unlock</button>
+      <div class="note" id="biMsg"></div>
+    </div>
+    <div id="biBody" class="hidden">
+      <div class="card"><div class="row">
+        <label class="f">Site<select id="biSite"></select></label>
+        <label class="f">Week of (any day in the week)<input type="date" id="biDate"></label>
+        <button class="btn" id="biLoad">Load week</button>
+        <button class="btn ghost" id="biExport" disabled>Download Excel</button>
+        <button class="btn ghost" id="biLockBtn">Lock</button></div>
+        <div class="note" style="margin-top:6px">Billed hours = hours worked + paid breaks + adjustments. Regular up to 40 a week, overtime after 40 at 1.5&times; the rate. PTO and guaranteed top-ups are not billed; add them under Other if needed. Salaried staff are left out; subs are billed like everyone else.</div></div>
+      <div id="biWeek" class="hidden">
+        <div class="banner warn" id="biWarn"></div>
+        <div class="kpi" id="biKpi"></div>
+        <div class="card"><h2 id="biTitle">Week</h2><div class="tableWrap"><table id="biTable"></table></div><div class="note" style="margin-top:8px">Tap the Other amount to add travel, PTO or any other charge for that person this week.</div></div>
+        <div class="card"><h2>By classification</h2><div class="tableWrap"><table id="biClass"></table></div></div>
+      </div>
+      <div class="card"><h2>Billing rates</h2>
+        <div class="note" style="margin-bottom:10px">One hourly rate per classification. A site rate overrides the default for that site. To change a rate, add a new one with the date it starts; past weeks keep the rate that was in effect.</div>
+        <div class="tableWrap"><table id="biRates"></table></div>
+        <div class="row" style="margin-top:10px"><label class="f">Class<select id="biRClass"></select></label><label class="f">Applies to<select id="biRSite"></select></label><label class="f">Rate ($/hr)<input type="number" step="0.01" min="0" id="biRRate"></label><label class="f">Starts<input type="date" id="biRFrom"></label><button class="btn ghost" id="biRAdd">Add rate</button></div></div>
+      <div class="card"><h2>Per diem</h2>
+        <div class="note" style="margin-bottom:10px">Billed per person for each day they worked at the site. Leave a site out, or set 0, for no per diem.</div>
+        <div class="tableWrap"><table id="biPd"></table></div>
+        <div class="row" style="margin-top:10px"><label class="f">Site<select id="biPSite"></select></label><label class="f">Per day ($)<input type="number" step="0.01" min="0" id="biPAmt"></label><label class="f">Starts<input type="date" id="biPFrom"></label><button class="btn ghost" id="biPAdd">Add per diem</button></div></div>
+    </div>
   </div>
 
   <!-- ARCHIVE -->
@@ -352,6 +409,8 @@ const SUPABASE_URL = 'https://vbfspyruvaoqmhuutphl.supabase.co', SUPABASE_KEY = 
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const $ = id => document.getElementById(id);
 const toast = (m, ms=2600) => { const t = document.createElement('div'); t.className='toast'; t.textContent=m; document.body.appendChild(t); setTimeout(()=>t.remove(), ms); };
+const lsGet = k => { try { return localStorage.getItem('tc:' + k) || ''; } catch (e) { return ''; } };
+const lsSet = (k, v) => { try { localStorage.setItem('tc:' + k, v); } catch (e) {} };
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let me = null, sites = [], schedules = [], employeesAll = [], classes = [];
 const isAdmin = () => me && me.role === 'admin';
@@ -404,7 +463,7 @@ async function boot(){
   me = prof; $('v-login').classList.add('hidden'); $('nav').classList.remove('hidden'); $('btnOut').classList.remove('hidden'); $('whoami').textContent = me.display_name + ' · ' + me.role;
   $('navUsers').classList.toggle('hidden', !isAdmin()); $('siteAddCard').classList.toggle('hidden', !isAdmin()); $('empAddCard').classList.toggle('hidden', !isAdmin()); $('clsCard').classList.toggle('hidden', !isAdmin());
   arQuick('12m');
-  await loadRefs(); showView('review');
+  await loadRefs(); await checkBillingAccess(); showView('review');
 }
 $('lGo').onclick = async () => { $('lMsg').textContent = 'Signing in…'; const { error } = await sb.auth.signInWithPassword({ email: $('lEmail').value.trim(), password: $('lPass').value }); if (error){ $('lMsg').textContent = error.message; return; } $('lMsg').textContent = ''; boot(); };
 $('lPass').onkeydown = e => { if (e.key === 'Enter') $('lGo').click(); };
@@ -415,6 +474,12 @@ async function loadRefs(){
   const opts = mySites().map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
   $('rvSite').innerHTML = opts; $('eSite').innerHTML = '<option value="">— unassigned —</option>' + opts; $('uSites').innerHTML = sites.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
   $('arSite').innerHTML = (mySites().length > 1 ? '<option value="">All my sites</option>' : '') + opts;
+  $('hcSite').innerHTML = opts; $('biSite').innerHTML = opts; $('biPSite').innerHTML = sites.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+  $('biRSite').innerHTML = '<option value="">All sites (default)</option>' + sites.map(s => `<option value="${s.id}">Only ${esc(s.name)}</option>`).join('');
+  const keepS = $('eSiteF').value || lsGet('eSiteF');
+  $('eSiteF').innerHTML = `<option value="">${isAdmin() ? 'All sites' : 'All my sites'}</option>` + opts + '<option value="none">— unassigned —</option>';
+  $('eSiteF').value = [...$('eSiteF').options].some(o => o.value === keepS) ? keepS : '';
+  const hs = lsGet('hcSite'); if (hs && mySites().some(s => s.id === hs)) $('hcSite').value = hs;
   fillSched($('eSched'), $('eSite').value);
   await loadClasses(); fillClassSelects();
 }
@@ -430,6 +495,7 @@ $('eSite').onchange = () => fillSched($('eSched'), $('eSite').value);
 $('ePay').onchange = () => $('eCoWrap').classList.toggle('hidden', $('ePay').value !== 'sub');
 document.querySelectorAll('#nav button').forEach(b => b.onclick = () => showView(b.dataset.v));
 function showView(v){ document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.v === v)); document.querySelectorAll('.view').forEach(x => x.classList.toggle('hidden', x.id !== 'v-' + v));
+  if (v !== 'billing' && BI_UNLOCKED) biLock(); if (v === 'billing') biShow(); if (v === 'headcount') loadHeadcount();
   if (v === 'employees') renderEmployees(); if (v === 'sites') renderSites(); if (v === 'users') renderUsers(); if (v === 'audit') loadAudit(); if (v === 'archive') loadArchive(); }  // always refresh: other reviewers may have made changes since the tab was last opened
 
 // ========== REVIEW ==========
@@ -439,17 +505,25 @@ let RV_OPEN = null; // employee id whose punches are expanded (stays open after 
 $('rvLoad').onclick = loadWeek;
 async function loadWeek(){
   const site = siteById($('rvSite').value); if (!site){ toast('Pick a site'); return; }
-  const ws = Rules.weekStartOf($('rvDate').value), days = [...Array(7)].map((_, i) => Rules.addDays(ws, i));
-  const from = Rules.zoned(Rules.addDays(ws, -1), '00:00', site.timezone).toISOString(), to = Rules.zoned(Rules.addDays(ws, 8), '00:00', site.timezone).toISOString();
   $('rvLoad').disabled = true;
+  try { RV = await computeWeekFor(site, $('rvDate').value); }
+  catch (e) { toast(e.message, 8000); return; }
+  finally { $('rvLoad').disabled = false; }
+  if (RV_OPEN && !RV.rows.some(r => r.emp.id === RV_OPEN)) RV_OPEN = null;
+  renderWeek(); $('rvBody').classList.remove('hidden'); $('rvExport').disabled = false;
+}
+// loads and runs the rules for one site-week; used by Review and Billing
+async function computeWeekFor(site, dateVal){
+  if (!dateVal) throw new Error('Pick a date in the week.');
+  const ws = Rules.weekStartOf(dateVal), days = [...Array(7)].map((_, i) => Rules.addDays(ws, i));
+  const from = Rules.zoned(Rules.addDays(ws, -1), '00:00', site.timezone).toISOString(), to = Rules.zoned(Rules.addDays(ws, 8), '00:00', site.timezone).toISOString();
   const EMP_COLS = 'id,code,name,pay_type,active,site_id,schedule_id,class_id,company';
   const [{ data: emps, error: eErr }, { data: punches, error }, { data: adjs }, { data: closes, error: cErr }] = await Promise.all([
     sb.from('employees').select(EMP_COLS).eq('site_id', site.id),
     sb.from('punches').select('*').eq('site_id', site.id).gte('ts', from).lt('ts', to).order('ts'),
     sb.from('day_adjustments').select('*').gte('work_date', ws).lte('work_date', days[6]),
     sb.from('week_closes').select('*').eq('site_id', site.id).eq('week_start', ws).order('closed_at', { ascending: false }) ]);
-  $('rvLoad').disabled = false;
-  const err1 = error || eErr || cErr; if (err1){ toast(/company/.test(err1.message) ? 'Run schema_patch6.sql in Supabase first — ' + err1.message : /class_id|week_closes/.test(err1.message) ? 'Run schema_patch5.sql in Supabase first — ' + err1.message : err1.message, 8000); return; }
+  const err1 = error || eErr || cErr; if (err1) throw new Error(/company/.test(err1.message) ? 'Run schema_patch6.sql in Supabase first — ' + err1.message : /class_id|week_closes/.test(err1.message) ? 'Run schema_patch5.sql in Supabase first — ' + err1.message : err1.message);
   // include people who punched here but are now assigned elsewhere
   const ids = new Set(emps.map(e => e.id)); const extra = [...new Set(punches.map(p => p.employee_id))].filter(id => !ids.has(id));
   let more = []; if (extra.length){ const r = await sb.from('employees').select(EMP_COLS).in('id', extra); more = r.data || []; }
@@ -465,9 +539,7 @@ async function loadWeek(){
     // inactive people only appear if they actually punched (or had time added) this week
     if (r.emp.active === false) return worked;
     return worked || r.week.total > 0 || r.emp.site_id === site.id; });
-  RV = { site, ws, days, rows, punches, close: (closes || []).find(c => !c.reopened_at) || null, closeHist: closes || [] };
-  if (RV_OPEN && !rows.some(r => r.emp.id === RV_OPEN)) RV_OPEN = null;
-  renderWeek(); $('rvBody').classList.remove('hidden'); $('rvExport').disabled = false;
+  return { site, ws, days, rows, punches, close: (closes || []).find(c => !c.reopened_at) || null, closeHist: closes || [] };
 }
 function renderWeek(){
   const { site, ws, rows } = RV; const tot = k => Rules.round2(rows.reduce((a, r) => a + (r.week[k]||0), 0));
@@ -761,7 +833,8 @@ async function reopenWeek(){
 
 // ========== EMPLOYEES ==========
 let EMP_SEL = new Set(), EMP_LIST = [];
-$('eSearch').oninput = () => drawEmployees(); $('eFilter').onchange = () => drawEmployees(); $('eClassF').onchange = () => drawEmployees();
+$('eSearch').oninput = () => drawEmployees(); $('eFilter').onchange = () => drawEmployees();
+$('eSiteF').onchange = () => { const v = $('eSiteF').value; lsSet('eSiteF', v); if (v && v !== 'none' && isAdmin()){ $('eSite').value = v; fillSched($('eSched'), v); } drawEmployees(); }; $('eClassF').onchange = () => drawEmployees();
 async function renderEmployees(){
   const [{ data, error }, cls, cos] = await Promise.all([sb.rpc('list_all_employees'), sb.rpc('employee_class_ids'), sb.rpc('employee_companies')]);
   if (error){ toast(error.message); return; } employeesAll = data || [];
@@ -774,9 +847,9 @@ async function renderEmployees(){
   drawEmployees();
 }
 function drawEmployees(){
-  const q = $('eSearch').value.trim().toLowerCase(), f = $('eFilter').value, mine = new Set(mySites().map(s => s.id)), cf = $('eClassF').value;
+  const q = $('eSearch').value.trim().toLowerCase(), f = $('eFilter').value, mine = new Set(mySites().map(s => s.id)), cf = $('eClassF').value, sf = $('eSiteF').value;
   const byCls = (val, fv) => !fv || (fv === 'none' ? !val : val === fv);
-  const list = EMP_LIST = employeesAll.filter(e => (f === 'all' ? e.active : f === 'inactive' ? !e.active : f === 'unassigned' ? (e.active && !e.site_id) : f === 'subs' ? (e.active && isSub(e)) : f === 'crew' ? (e.active && !isSub(e)) : (e.active && mine.has(e.site_id)))).filter(e => !q || e.name.toLowerCase().includes(q) || (e.code||'').toLowerCase().includes(q) || (e.company||'').toLowerCase().includes(q)).filter(e => byCls(e.class_id, cf));
+  const list = EMP_LIST = employeesAll.filter(e => (f === 'all' ? e.active : f === 'inactive' ? !e.active : f === 'unassigned' ? (e.active && !e.site_id) : f === 'subs' ? (e.active && isSub(e)) : f === 'crew' ? (e.active && !isSub(e)) : (e.active && (sf ? true : mine.has(e.site_id))))).filter(e => !sf || (sf === 'none' ? !e.site_id : e.site_id === sf)).filter(e => !q || e.name.toLowerCase().includes(q) || (e.code||'').toLowerCase().includes(q) || (e.company||'').toLowerCase().includes(q)).filter(e => byCls(e.class_id, cf));
   const adm = isAdmin(), allOn = list.length && list.every(e => EMP_SEL.has(e.id));
   $('empTable').innerHTML = `<tr>${adm ? `<th><input type="checkbox" id="eChkAll" ${allOn ? 'checked' : ''} title="Select everyone shown"></th>` : ''}<th>Employee</th><th>#</th><th>Class</th><th>Pay</th><th>Site</th><th>Schedule</th><th>Face</th><th></th></tr>` + list.map(e => `<tr>${adm ? `<td><input type="checkbox" data-chk="${e.id}" ${EMP_SEL.has(e.id) ? 'checked' : ''}></td>` : ''}<td><b>${esc(e.name)}</b></td><td>${esc(e.code||'')}</td><td>${clsCode(e.class_id) ? `<span class="code" title="${esc((clsById(e.class_id) || {}).description || '')}">${esc(clsCode(e.class_id))}</span>` : '<span class="note">—</span>'}</td><td>${isSub(e) ? `<span class="badge sub">sub</span> ${esc(e.company || 'no company')}` : e.pay_type}</td><td>${esc((siteById(e.site_id)||{}).name || '—')}</td><td>${esc((schedById(e.schedule_id)||{}).name || '—')}</td><td>${e.enrolled ? '<span class="badge ok">enrolled</span>' + (isAdmin() ? ` <button class="btn sm ghost" data-unface="${e.id}">Remove</button>` : '') : '<span class="badge">not yet</span>'}</td><td style="white-space:nowrap"><button class="btn sm ghost" data-assign="${e.id}">Assign</button> ${isAdmin() ? `<button class="btn sm ghost" data-edit="${e.id}">Edit</button>` : ''}</td></tr>`).join('') || '<tr><td class="note">No one matches.</td></tr>';
   $('empTable').querySelectorAll('[data-assign]').forEach(b => b.onclick = () => assignEmp(employeesAll.find(e => e.id === b.dataset.assign)));
@@ -954,6 +1027,248 @@ function renderArchiveClasses(){
   const desc = code => (classes.find(c => c.code === code) || {}).description || '';
   $('arClassTable').innerHTML = `<tr><th>Class</th><th></th><th class="n">People</th><th class="n">Regular</th><th class="n">OT</th><th class="n">PTO</th><th class="n">Total paid</th></tr>` + list.map(x => `<tr><td>${x.cls ? `<span class="code">${esc(x.cls)}</span>` : '<span class="note">— not set —</span>'}</td><td class="note">${esc(desc(x.cls))}</td><td class="n">${x.people.size}</td><td class="n">${Rules.round2(x.reg)}</td><td class="n">${Rules.round2(x.ot) || '-'}</td><td class="n">${Rules.round2(x.pto) || '-'}</td><td class="n"><b>${Rules.round2(x.total)}</b></td></tr>`).join('') || '<tr><td class="note">Nothing yet.</td></tr>';
 }
+
+// ========== HEADCOUNT (who is at a site right now — emergency roll call) ==========
+let HC = null;
+$('hcLoad').onclick = loadHeadcount;
+$('hcSite').onchange = () => { lsSet('hcSite', $('hcSite').value); loadHeadcount(); };
+$('hcTo').onchange = () => { if (HC) lsSet('hcTo:' + HC.site.id, $('hcTo').value.trim()); };
+const HC_LUNCH_MIN = 90;      // punched out this recently, before the end of their shift = counted as out at lunch
+const HC_STALE_H = 2;         // still punched in this long after scheduled end = probably a missed punch-out, listed separately
+async function loadHeadcount(){
+  const site = siteById($('hcSite').value); if (!site){ toast('Pick a site'); return; }
+  const tz = site.timezone, now = new Date();
+  $('hcLoad').disabled = true;
+  try {
+    const { data: punches, error } = await sb.from('punches').select('employee_id,type,ts,device_id').eq('site_id', site.id).gte('ts', new Date(now.getTime() - 20*3600e3).toISOString()).order('ts');
+    if (error) throw new Error(error.message);
+    const ids = [...new Set(punches.map(p => p.employee_id))];
+    let emps = [];
+    for (let i = 0; i < ids.length; i += 150){ const r = await sb.from('employees').select('id,code,name,pay_type,company,class_id,schedule_id').in('id', ids.slice(i, i + 150)); if (r.error) throw new Error(r.error.message); emps = emps.concat(r.data || []); }
+    const on = [], gone = [];
+    emps.forEach(e => {
+      const ps = punches.filter(p => p.employee_id === e.id), last = ps[ps.length - 1], sched = schedById(e.schedule_id);
+      const wd = Rules.workDate(last.ts, sched, tz), shift = ps.filter(p => Rules.workDate(p.ts, sched, tz) === wd);
+      const firstIn = shift.find(p => p.type === 'in') || [...ps].reverse().find(p => p.type === 'in' && new Date(last.ts) - new Date(p.ts) < 14*3600e3), win = Rules.schedWindow(wd, sched, tz);
+      const item = { e, firstIn: firstIn ? firstIn.ts : null, last };
+      if (last.type === 'in'){
+        const staleAt = win.end ? win.end.getTime() + HC_STALE_H*3600e3 : new Date(last.ts).getTime() + 14*3600e3;
+        (now.getTime() > staleAt ? gone : on).push(Object.assign(item, { status: 'in' }));
+      } else {
+        const mins = (now - new Date(last.ts)) / 60000, beforeEnd = !win.end || new Date(last.ts).getTime() < win.end.getTime() - 30*60e3;
+        if (mins <= HC_LUNCH_MIN && beforeEnd && firstIn) on.push(Object.assign(item, { status: 'lunch' }));
+      }
+    });
+    const grp = x => isSub(x.e) ? (x.e.company || '(no company)') : '';
+    const sorter = (a, b) => grp(a).localeCompare(grp(b)) || a.e.name.localeCompare(b.e.name);
+    on.sort(sorter); gone.sort(sorter);
+    const dev = new Map(); punches.forEach(p => { if (p.device_id) dev.set(p.device_id, p.ts); });
+    HC = { site, at: now, on, gone, dev };
+    $('hcTo').value = lsGet('hcTo:' + site.id);
+    renderHeadcount();
+  } catch (e) { toast(e.message, 7000); }
+  finally { $('hcLoad').disabled = false; }
+}
+function hcWhen(d, tz){ return new Date(d).toLocaleString('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); }
+function hcGroups(list){
+  const g = new Map(); list.forEach(x => { const k = isSub(x.e) ? (x.e.company || '(no company)') + ' (sub)' : 'AIME'; if (!g.has(k)) g.set(k, []); g.get(k).push(x); });
+  return [...g.entries()];
+}
+function renderHeadcount(){
+  const { site, at, on, gone, dev } = HC, tz = site.timezone;
+  const lunch = on.filter(x => x.status === 'lunch').length, subs = on.filter(x => isSub(x.e)).length;
+  $('hcTitle').textContent = `${site.name} — ${on.length} on site as of ${hcWhen(at, tz)}`;
+  $('hcKpi').innerHTML = `<div><b>${on.length}</b><span>on site now</span></div><div><b>${on.length - lunch}</b><span>punched in</span></div><div><b>${lunch}</b><span>out at lunch</span></div><div><b>${on.length - subs}</b><span>AIME crew</span></div><div><b>${subs}</b><span>subs</span></div>${gone.length ? `<div><b>${gone.length}</b><span>not counted (see below)</span></div>` : ''}`;
+  const row = x => `<tr><td><b>${esc(x.e.name)}</b>${x.e.code ? ' <span class="note">#' + esc(x.e.code) + '</span>' : ''}</td><td>${clsCode(x.e.class_id) ? '<span class="code">' + esc(clsCode(x.e.class_id)) + '</span>' : '<span class="note">—</span>'}</td><td>${x.firstIn ? Rules.fmtTime(x.firstIn, tz) : '—'}</td><td>${x.status === 'lunch' ? `<span class="badge lunch">out at lunch since ${Rules.fmtTime(x.last.ts, tz)}</span>` : x.status === 'in' && HC.gone.includes(x) ? `<span class="badge flag">in since ${Rules.fmtTime(x.last.ts, tz)}</span>` : '<span class="badge in">punched in</span>'}</td></tr>`;
+  const table = list => `<tr><th>Name</th><th>Class</th><th>Time in</th><th>Status</th></tr>` + hcGroups(list).map(([k, xs]) => `<tr class="hcGroup"><th colspan="4">${esc(k)} — ${xs.length}</th></tr>` + xs.map(row).join('')).join('');
+  $('hcTable').innerHTML = on.length ? table(on) : '<tr><td class="note">No one is punched in at this site right now.</td></tr>';
+  $('hcGoneCard').classList.toggle('hidden', !gone.length); $('hcGone').innerHTML = gone.length ? table(gone) : '';
+  $('hcDev').innerHTML = dev.size ? [...dev.entries()].sort().map(([d, ts]) => `<div><b>${esc(d)}</b> — last punch ${hcWhen(ts, tz)}</div>`).join('') + '<div style="margin-top:4px">A tablet that has been quiet for a long time during a shift may be offline; its punches arrive when it reconnects.</div>' : 'No punches from any tablet at this site in the last 20 hours.';
+  $('hcBody').classList.remove('hidden'); $('hcCopy').disabled = false; $('hcMail').disabled = false;
+}
+function hcText(){
+  const { site, at, on, gone } = HC, tz = site.timezone, lunch = on.filter(x => x.status === 'lunch').length;
+  const L = [`HEADCOUNT — ${site.name} — ${hcWhen(at, tz)}`, `Total on site: ${on.length} (${on.length - lunch} punched in, ${lunch} out at lunch)`, ''];
+  hcGroups(on).forEach(([k, xs]) => { L.push(`${k} — ${xs.length}`); xs.forEach((x, i) => L.push(`${i + 1}. ${x.e.name}${clsCode(x.e.class_id) ? ' — ' + clsCode(x.e.class_id) : ''} — in ${x.firstIn ? Rules.fmtTime(x.firstIn, tz) : '?'}${x.status === 'lunch' ? ' (out at lunch since ' + Rules.fmtTime(x.last.ts, tz) + ')' : ''}`)); L.push(''); });
+  if (!on.length) L.push('No one is punched in right now.', '');
+  if (gone.length){ L.push(`Not counted — still punched in more than ${HC_STALE_H} hrs after their shift (likely missed punch-out): ${gone.map(x => x.e.name).join(', ')}`, ''); }
+  L.push('From the AIME Time Clock. Punches from a tablet that is offline appear once it reconnects.');
+  return L.join('\n');
+}
+$('hcCopy').onclick = async () => { try { await navigator.clipboard.writeText(hcText()); toast('Copied — paste it into an email, text or form'); } catch (e) { toast('Copy failed — your browser blocked it.'); } };
+$('hcMail').onclick = () => {
+  const to = $('hcTo').value.trim(); lsSet('hcTo:' + HC.site.id, to);
+  const subj = `Headcount — ${HC.site.name} — ${hcWhen(HC.at, HC.site.timezone)}`;
+  location.href = `mailto:${encodeURIComponent(to).replace(/%40/g, '@').replace(/%3B/gi, ';').replace(/%2C/gi, ',')}?subject=${encodeURIComponent(subj)}&body=${encodeURIComponent(hcText())}`;
+};
+
+// ========== BILLING (private) ==========
+// Real protection is in the database: the billing tables are only readable by users listed in billing_access (schema_patch8.sql).
+// The password prompt is a second check so an unattended, signed-in laptop doesn't show rates.
+let BI_OK = false, BI_UNLOCKED = 0, BI = null, BI_RATES = [], BI_PD = [];
+const BI_IDLE_MS = 15 * 60e3;
+const money = x => (x < 0 ? '-$' : '$') + Math.abs(+x || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+async function checkBillingAccess(){
+  const { data, error } = await sb.from('billing_access').select('user_id').eq('user_id', me.user_id).maybeSingle();
+  BI_OK = !error && !!data; $('navBill').classList.toggle('hidden', !BI_OK);
+}
+const biUnlocked = () => BI_UNLOCKED && Date.now() - BI_UNLOCKED < BI_IDLE_MS;
+function biShow(){
+  const u = biUnlocked(); $('biLock').classList.toggle('hidden', !!u); $('biBody').classList.toggle('hidden', !u);
+  if (u) loadRates(); else { $('biPass').value = ''; setTimeout(() => $('biPass').focus(), 50); }
+}
+function biLock(){ BI_UNLOCKED = 0; BI = null; BI_RATES = []; BI_PD = []; ['biTable','biClass','biRates','biPd','biKpi','biWarn'].forEach(id => $(id).innerHTML = ''); $('biWeek').classList.add('hidden'); $('biExport').disabled = true; biShow(); }
+setInterval(() => { if (BI_UNLOCKED && !biUnlocked()) biLock(); }, 20000);
+['click', 'input', 'keydown'].forEach(ev => $('biBody').addEventListener(ev, () => { if (biUnlocked()) BI_UNLOCKED = Date.now(); }));
+$('biGo').onclick = async () => {
+  const pass = $('biPass').value; if (!pass) return; $('biMsg').textContent = 'Checking…';
+  const { data: { session } } = await sb.auth.getSession();
+  // separate client so checking the password never touches this page's own sign-in
+  const tmp = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+  const { error } = await tmp.auth.signInWithPassword({ email: session.user.email, password: pass });
+  $('biPass').value = '';
+  if (error){ $('biMsg').textContent = 'Wrong password.'; return; }
+  $('biMsg').textContent = ''; BI_UNLOCKED = Date.now(); biShow();
+};
+$('biPass').onkeydown = e => { if (e.key === 'Enter') $('biGo').click(); };
+$('biLockBtn').onclick = biLock;
+(function(){ const d = new Date(), iso = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; $('biDate').value = iso; $('biRFrom').value = iso; $('biPFrom').value = iso; })();
+
+async function loadRates(){
+  const [a, b] = await Promise.all([sb.from('billing_rates').select('*').order('effective_from', { ascending: false }), sb.from('billing_per_diem').select('*').order('effective_from', { ascending: false })]);
+  const err = a.error || b.error;
+  if (err){ toast(/billing_/.test(err.message) ? 'Run schema_patch8.sql in Supabase first — ' + err.message : err.message, 8000); return; }
+  BI_RATES = a.data || []; BI_PD = b.data || [];
+  $('biRClass').innerHTML = '<option value="">— pick a class —</option>' + classes.filter(c => c.active).map(c => `<option value="${c.id}">${esc(c.code)}${c.description ? ' — ' + esc(c.description) : ''}</option>`).join('');
+  renderRates();
+}
+// newest rate already in effect on that date: the site's own rate wins over the all-sites default
+function rateFor(classId, siteId, dk){
+  const own = BI_RATES.find(x => x.class_id === classId && x.site_id === siteId && x.effective_from <= dk); if (own) return +own.rate;
+  const def = BI_RATES.find(x => x.class_id === classId && !x.site_id && x.effective_from <= dk); return def ? +def.rate : null;
+}
+const perDiemFor = (siteId, dk) => { const x = BI_PD.find(p => p.site_id === siteId && p.effective_from <= dk); return x ? +x.amount : 0; };
+function todayKey(){ const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+function renderRates(){
+  const t = todayKey();
+  const cur = BI_RATES.filter(x => x.effective_from <= t), curIds = new Set();
+  [...new Set(cur.map(x => x.class_id + '|' + (x.site_id || '')))].forEach(k => curIds.add(cur.find(x => x.class_id + '|' + (x.site_id || '') === k).id));
+  const list = [...BI_RATES].sort((a, b) => clsCode(a.class_id).localeCompare(clsCode(b.class_id)) || (a.site_id ? (siteById(a.site_id) || {}).name || '~' : '').localeCompare(b.site_id ? (siteById(b.site_id) || {}).name || '~' : '') || b.effective_from.localeCompare(a.effective_from));
+  $('biRates').innerHTML = `<tr><th>Class</th><th>Applies to</th><th class="n">Rate / hr</th><th class="n">OT rate / hr</th><th>Starts</th><th></th><th></th></tr>` + (list.map(x => `<tr><td><span class="code">${esc(clsCode(x.class_id) || '?')}</span> <span class="note">${esc((clsById(x.class_id) || {}).description || '')}</span></td><td>${x.site_id ? esc((siteById(x.site_id) || {}).name || '?') : 'All sites (default)'}</td><td class="n money">${money(x.rate)}</td><td class="n money note">${money(Rules.round2(x.rate * 1.5))}</td><td>${x.effective_from}</td><td>${curIds.has(x.id) ? '<span class="badge cur">in effect</span>' : x.effective_from > t ? '<span class="badge">upcoming</span>' : '<span class="note">past</span>'}</td><td><button class="btn sm ghost" data-rdel="${x.id}">Delete</button></td></tr>`).join('') || '<tr><td class="note" colspan="7">No rates yet. Add one below.</td></tr>');
+  const noRate = classes.filter(c => c.active && !BI_RATES.some(x => x.class_id === c.id && !x.site_id));
+  if (noRate.length) $('biRates').innerHTML += `<tr><td colspan="7" class="note">No default rate yet: ${noRate.map(c => esc(c.code)).join(', ')}</td></tr>`;
+  $('biRates').querySelectorAll('[data-rdel]').forEach(b => b.onclick = async () => { const x = BI_RATES.find(r => r.id === b.dataset.rdel);
+    if (!confirm(`Delete the ${clsCode(x.class_id)} rate of ${money(x.rate)} starting ${x.effective_from}? Weeks it covered will use the rate before it (or show "no rate").`)) return;
+    const { error } = await sb.from('billing_rates').delete().eq('id', x.id); if (error){ toast(error.message); return; } toast('Rate deleted'); await loadRates(); if (BI) biReload(); });
+  const pl = [...BI_PD].sort((a, b) => ((siteById(a.site_id) || {}).name || '').localeCompare((siteById(b.site_id) || {}).name || '') || b.effective_from.localeCompare(a.effective_from));
+  const pcur = new Set(); [...new Set(BI_PD.filter(x => x.effective_from <= t).map(x => x.site_id))].forEach(s => pcur.add(BI_PD.find(x => x.site_id === s && x.effective_from <= t).id));
+  $('biPd').innerHTML = `<tr><th>Site</th><th class="n">Per day</th><th>Starts</th><th></th><th></th></tr>` + (pl.map(x => `<tr><td>${esc((siteById(x.site_id) || {}).name || '?')}</td><td class="n money">${money(x.amount)}</td><td>${x.effective_from}</td><td>${pcur.has(x.id) ? '<span class="badge cur">in effect</span>' : x.effective_from > t ? '<span class="badge">upcoming</span>' : '<span class="note">past</span>'}</td><td><button class="btn sm ghost" data-pdel="${x.id}">Delete</button></td></tr>`).join('') || '<tr><td class="note" colspan="5">No per diem set — none is billed.</td></tr>');
+  $('biPd').querySelectorAll('[data-pdel]').forEach(b => b.onclick = async () => { const x = BI_PD.find(r => r.id === b.dataset.pdel);
+    if (!confirm(`Delete the ${money(x.amount)}/day per diem for ${(siteById(x.site_id) || {}).name} starting ${x.effective_from}?`)) return;
+    const { error } = await sb.from('billing_per_diem').delete().eq('id', x.id); if (error){ toast(error.message); return; } toast('Per diem deleted'); await loadRates(); if (BI) biReload(); });
+}
+$('biRAdd').onclick = async () => {
+  const class_id = $('biRClass').value, site_id = $('biRSite').value || null, rate = $('biRRate').value, effective_from = $('biRFrom').value;
+  if (!class_id || rate === '' || +rate < 0 || !effective_from){ toast('Pick a class, enter a rate and a start date.'); return; }
+  const { error } = await sb.from('billing_rates').insert({ class_id, site_id, rate: +rate, effective_from });
+  if (error){ toast(/duplicate|unique/.test(error.message) ? 'There is already a rate for that class and site starting that day — delete it first.' : error.message, 6000); return; }
+  $('biRRate').value = ''; toast('Rate added'); await loadRates(); if (BI) biReload();
+};
+$('biPAdd').onclick = async () => {
+  const site_id = $('biPSite').value, amount = $('biPAmt').value, effective_from = $('biPFrom').value;
+  if (!site_id || amount === '' || +amount < 0 || !effective_from){ toast('Pick a site, enter an amount (0 for none) and a start date.'); return; }
+  const { error } = await sb.from('billing_per_diem').insert({ site_id, amount: +amount, effective_from });
+  if (error){ toast(/duplicate|unique/.test(error.message) ? 'That site already has a per diem starting that day — delete it first.' : error.message, 6000); return; }
+  $('biPAmt').value = ''; toast('Per diem added'); await loadRates(); if (BI) biReload();
+};
+
+$('biLoad').onclick = () => biReload(true);
+async function biReload(fresh){
+  const site = fresh ? siteById($('biSite').value) : BI && BI.W.site, dateVal = fresh ? $('biDate').value : BI && BI.W.ws;
+  if (!site){ toast('Pick a site'); return; }
+  $('biLoad').disabled = true;
+  try {
+    const W = await computeWeekFor(site, dateVal);
+    const { data: other, error } = await sb.from('billing_other').select('*').eq('site_id', site.id).eq('week_start', W.ws);
+    if (error) throw new Error(/billing_/.test(error.message) ? 'Run schema_patch8.sql in Supabase first — ' + error.message : error.message);
+    BI = billWeek(W, other || []); renderBill();
+  } catch (e) { toast(e.message, 8000); }
+  finally { $('biLoad').disabled = false; }
+}
+// billed hours per day = paid (worked + breaks + adjustments); regular until 40 for the week, then OT at 1.5x. Each day uses the rate in effect that day.
+function billWeek(W, other){
+  const R2 = Rules.round2;
+  const rows = W.rows.filter(r => !r.week.salary).map(r => {
+    const cls = r.emp.class_id; let run = 0, regH = 0, otH = 0, regAmt = 0, otAmt = 0, noRateH = 0, pdDays = 0, pdAmt = 0; const rates = new Set();
+    r.days.forEach(d => {
+      const p = d.paid || 0, ot = Math.max(0, run + p - 40) - Math.max(0, run - 40), reg = p - ot; run += p;
+      regH += reg; otH += ot;
+      if (p){ const rt = cls ? rateFor(cls, W.site.id, d.dateKey) : null;
+        if (rt == null) noRateH += p; else { regAmt += reg * rt; otAmt += ot * rt * 1.5; rates.add(rt); } }
+      if (d.worked > 0){ pdDays++; pdAmt += perDiemFor(W.site.id, d.dateKey); }
+    });
+    const o = other.find(x => x.employee_id === r.emp.id) || null, oAmt = o ? +o.amount : 0;
+    return { r, cls: clsCode(cls), regH: R2(regH), otH: R2(otH), rates: [...rates], regAmt: R2(regAmt), otAmt: R2(otAmt), noRateH: R2(noRateH), pdDays, pdAmt: R2(pdAmt), other: o, oAmt: R2(oAmt), total: R2(regAmt + otAmt + pdAmt + oAmt) };
+  }).filter(x => x.regH || x.otH || x.pdDays || x.oAmt || x.r.week.pto || x.r.week.guar)
+    .sort((a, b) => (isSub(a.r.emp) ? 1 : 0) - (isSub(b.r.emp) ? 1 : 0) || coOf(a.r.emp).localeCompare(coOf(b.r.emp)) || a.r.emp.name.localeCompare(b.r.emp.name));
+  return { W, rows };
+}
+const biSum = (rows, k) => Rules.round2(rows.reduce((a, x) => a + (x[k] || 0), 0));
+const rateTxt = x => !x.rates.length ? '' : x.rates.length === 1 ? money(x.rates[0]) : 'varies';
+function renderBill(){
+  const { W, rows } = BI, S = k => biSum(rows, k);
+  $('biTitle').textContent = `${W.site.name} — week of ${W.ws}${W.close ? ' (pay week closed)' : ''}`;
+  const miss = rows.filter(x => x.noRateH);
+  $('biWarn').innerHTML = miss.length ? `<div class="grow"><b>${Rules.round2(miss.reduce((a, x) => a + x.noRateH, 0))} hours are not billed because there's no rate:</b> ${miss.map(x => esc(x.r.emp.name) + ' (' + (x.cls ? esc(x.cls) + ' has no rate' : 'no class set') + ')').join(', ')}. Add the rate below, or set their class on the Employees tab, then reload.</div>` : '';
+  $('biKpi').innerHTML = `<div><b>${rows.length}</b><span>people billed</span></div><div><b>${S('regH')}</b><span>regular hrs</span></div><div><b>${S('otH')}</b><span>OT hrs</span></div><div><b class="money">${money(S('regAmt') + S('otAmt'))}</b><span>labor</span></div><div><b class="money">${money(S('pdAmt'))}</b><span>per diem</span></div><div><b class="money">${money(S('oAmt'))}</b><span>other</span></div><div><b class="money">${money(S('total'))}</b><span>total to bill</span></div>`;
+  $('biTable').innerHTML = `<tr><th>Employee</th><th>Class</th><th class="n">Rate</th><th class="n">Reg hrs</th><th class="n">OT hrs</th><th class="n">Regular $</th><th class="n">OT $</th><th class="n">PD days</th><th class="n">Per diem $</th><th class="n">Other $</th><th class="n">Total $</th></tr>` +
+    rows.map((x, i) => `<tr><td><b>${esc(x.r.emp.name)}</b>${x.r.emp.code ? ' <span class="note">#' + esc(x.r.emp.code) + '</span>' : ''}${subBadge(x.r.emp)}</td><td>${x.cls ? '<span class="code">' + esc(x.cls) + '</span>' : '<span class="badge flag">no class</span>'}</td><td class="n money">${rateTxt(x)}${x.noRateH ? ' <span class="badge flag">no rate</span>' : ''}</td><td class="n">${x.regH || '-'}</td><td class="n">${x.otH ? '<b>' + x.otH + '</b>' : '-'}</td><td class="n money">${money(x.regAmt)}</td><td class="n money">${x.otAmt ? money(x.otAmt) : '-'}</td><td class="n">${x.pdDays || '-'}</td><td class="n money">${x.pdAmt ? money(x.pdAmt) : '-'}</td><td class="n"><button class="btn sm ghost" data-oth="${i}" title="${esc((x.other || {}).note || 'Add travel, PTO or other charges')}">${x.oAmt ? money(x.oAmt) : '+ add'}</button></td><td class="n money"><b>${money(x.total)}</b></td></tr>`).join('') +
+    `<tr><th>Total</th><th></th><th></th><th class="n">${S('regH')}</th><th class="n">${S('otH')}</th><th class="n money">${money(S('regAmt'))}</th><th class="n money">${money(S('otAmt'))}</th><th class="n">${S('pdDays')}</th><th class="n money">${money(S('pdAmt'))}</th><th class="n money">${money(S('oAmt'))}</th><th class="n money">${money(S('total'))}</th></tr>`;
+  $('biTable').querySelectorAll('[data-oth]').forEach(b => b.onclick = () => editOther(BI.rows[+b.dataset.oth]));
+  const byC = biByClass(rows);
+  $('biClass').innerHTML = `<tr><th>Class</th><th class="n">People</th><th class="n">Reg hrs</th><th class="n">OT hrs</th><th class="n">Labor $</th><th class="n">Per diem $</th><th class="n">Other $</th><th class="n">Total $</th></tr>` + byC.map(c => `<tr><td>${c.cls ? '<span class="code">' + esc(c.cls) + '</span>' : '<span class="note">— not set —</span>'}</td><td class="n">${c.n}</td><td class="n">${c.regH}</td><td class="n">${c.otH || '-'}</td><td class="n money">${money(c.labor)}</td><td class="n money">${c.pdAmt ? money(c.pdAmt) : '-'}</td><td class="n money">${c.oAmt ? money(c.oAmt) : '-'}</td><td class="n money"><b>${money(c.total)}</b></td></tr>`).join('');
+  $('biWeek').classList.remove('hidden'); $('biExport').disabled = !rows.length;
+}
+function biByClass(rows){
+  const g = new Map(); rows.forEach(x => { const c = g.get(x.cls) || { cls: x.cls, n: 0, regH: 0, otH: 0, labor: 0, pdAmt: 0, oAmt: 0, total: 0 };
+    c.n++; c.regH += x.regH; c.otH += x.otH; c.labor += x.regAmt + x.otAmt; c.pdAmt += x.pdAmt; c.oAmt += x.oAmt; c.total += x.total; g.set(x.cls, c); });
+  return [...g.values()].map(c => Object.assign(c, { regH: Rules.round2(c.regH), otH: Rules.round2(c.otH), labor: Rules.round2(c.labor), pdAmt: Rules.round2(c.pdAmt), oAmt: Rules.round2(c.oAmt), total: Rules.round2(c.total) })).sort((a, b) => (a.cls || '~').localeCompare(b.cls || '~'));
+}
+async function editOther(x){
+  const o = x.other || {};
+  await modal('Other charges — ' + esc(x.r.emp.name), `<div class="note">Week of ${BI.W.ws} at ${esc(BI.W.site.name)}. Use this for travel, PTO, a guaranteed-hours top-up or anything else to bill. Set 0 or clear it to remove.</div>
+    <label class="f">Amount ($)<input type="number" step="0.01" data-amt value="${o.amount ?? ''}"></label>
+    <label class="f">What it's for<input type="text" data-onote value="${esc(o.note || '')}" placeholder="e.g. Travel Palestine–Buckeye, PTO 8 hrs"></label>`, async m => {
+    const amt = m.querySelector('[data-amt]').value, note = m.querySelector('[data-onote]').value.trim() || null;
+    if (amt === '' || +amt === 0){ if (o.id){ const { error } = await sb.from('billing_other').delete().eq('id', o.id); if (error) throw new Error(error.message); } }
+    else { const { error } = await sb.from('billing_other').upsert({ employee_id: x.r.emp.id, site_id: BI.W.site.id, week_start: BI.W.ws, amount: +amt, note, updated_by: me.user_id, updated_at: new Date().toISOString() }, { onConflict: 'employee_id,site_id,week_start' }); if (error) throw new Error(error.message); }
+    toast('Saved'); biReload();
+  });
+}
+$('biExport').onclick = async () => {
+  const { W, rows } = BI, wb = new ExcelJS.Workbook(); wb.creator = 'AIME Time Clock';
+  const sh = wb.addWorksheet('Billing', { views: [{ state: 'frozen', ySplit: 4 }] });
+  const M = '$#,##0.00;-$#,##0.00;"-"', H = '0.00;-0.00;"-"';
+  sh.getCell('A1').value = `${W.site.name} — labor billing, week of ${W.ws}`; sh.getCell('A1').font = { bold: true, size: 14 };
+  sh.getCell('A2').value = `Mon ${W.days[0]} – Sun ${W.days[6]} · regular to 40 hrs/week, OT at 1.5x · exported ${new Date().toLocaleString('en-US')} by ${me.display_name}`; sh.getCell('A2').font = { color: { argb: 'FF7F7F7F' }, size: 10 };
+  const head = ['Employee','Emp #','Company','Class','Rate/hr','OT rate/hr','Regular hrs','OT hrs','Regular $','OT $','Per diem days','Per diem $','Other $','Other note','Total $','Unbilled hrs (no rate)'];
+  const fm = [null,null,null,null,M,M,H,H,M,M,'0',M,M,null,M,H];
+  sh.getRow(4).values = head; sh.getRow(4).font = { bold: true }; sh.getRow(4).eachCell(c => c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } });
+  rows.forEach((x, i) => { const one = x.rates.length === 1 ? x.rates[0] : null;
+    sh.getRow(5 + i).values = [x.r.emp.name, x.r.emp.code || '', isSub(x.r.emp) ? (x.r.emp.company || '(no company)') + ' (sub)' : 'AIME', x.cls, one ?? (x.rates.length ? 'varies' : ''), one != null ? Rules.round2(one * 1.5) : '', x.regH, x.otH, x.regAmt, x.otAmt, x.pdDays, x.pdAmt, x.oAmt, (x.other || {}).note || '', x.total, x.noRateH]; });
+  const last = 4 + rows.length, tr = sh.getRow(last + 1);
+  tr.getCell(1).value = `TOTAL — ${rows.length} people`;
+  [7,8,9,10,11,12,13,15,16].forEach(c => { const L = sh.getColumn(c).letter; tr.getCell(c).value = { formula: `SUM(${L}5:${L}${last})`, result: Rules.round2(rows.reduce((a, x) => a + (+sh.getRow(5 + rows.indexOf(x)).getCell(c).value || 0), 0)) }; });
+  tr.font = { bold: true }; tr.eachCell(c => c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } });
+  fm.forEach((f, i) => { if (f) for (let r = 5; r <= last + 1; r++) sh.getRow(r).getCell(i + 1).numFmt = f; });
+  head.forEach((h, i) => sh.getColumn(i + 1).width = i === 0 ? 26 : i === 2 ? 22 : i === 13 ? 30 : Math.max(10, h.length + 2));
+  sh.pageSetup = { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 };
+  const cl = biByClass(rows);
+  const cs = addTable(wb, 'By class', [['Class','People','Regular hrs','OT hrs','Labor $','Per diem $','Other $','Total $'], ...cl.map(c => [c.cls || '(not set)', c.n, c.regH, c.otH, c.labor, c.pdAmt, c.oAmt, c.total]), ['TOTAL', rows.length, biSum(rows, 'regH'), biSum(rows, 'otH'), Rules.round2(biSum(rows, 'regAmt') + biSum(rows, 'otAmt')), biSum(rows, 'pdAmt'), biSum(rows, 'oAmt'), biSum(rows, 'total')]]);
+  [5,6,7,8].forEach(c => cs.getColumn(c).numFmt = M); [3,4].forEach(c => cs.getColumn(c).numFmt = H); cs.getRow(cl.length + 2).font = { bold: true };
+  const buf = await wb.xlsx.writeBuffer();
+  saveBlob(new Blob([buf], { type: XLSX_TYPE }), `${W.site.name.replace(/\W+/g, '_')}_Billing_${W.ws}.xlsx`);
+};
 
 // ========== AUDIT ==========
 (function(){ const d = new Date(), iso = x => `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`; $('auTo').value = iso(d); d.setDate(d.getDate()-14); $('auFrom').value = iso(d); })();
