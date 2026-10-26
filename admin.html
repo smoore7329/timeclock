@@ -115,6 +115,7 @@
   <div id="v-employees" class="view hidden">
     <div class="card" id="empAddCard"><h2>Add employee (central list)</h2><div class="row">
       <label class="f">Full name<input type="text" id="eName"></label><label class="f">Employee #<input type="text" id="eCode"></label>
+      <label class="f">Phone<input type="tel" id="ePhone" placeholder="filled from Smartsheet by Employee #"></label>
       <label class="f">Pay type<select id="ePay"><option value="hourly">Hourly</option><option value="salary">Salary</option><option value="sub">Sub (subcontractor)</option></select></label>
       <label class="f hidden" id="eCoWrap">Company (sub)<input type="text" id="eCo" list="coList" placeholder="e.g. Acme Electric"></label><datalist id="coList"></datalist>
       <label class="f">Site<select id="eSite"></select></label><label class="f">Schedule<select id="eSched"></select></label>
@@ -927,9 +928,12 @@ async function assignEmp(e){
   await done;
 }
 async function editEmp(e){
-  const done = modal('Edit employee', `<div class="row"><label class="f">Name<input type="text" data-name value="${esc(e.name)}"></label><label class="f">Employee #<input type="text" data-code value="${esc(e.code||'')}"></label></div><div class="row"><label class="f">Pay type<select data-pay><option value="hourly" ${e.pay_type==='hourly'?'selected':''}>Hourly</option><option value="salary" ${e.pay_type==='salary'?'selected':''}>Salary</option><option value="sub" ${e.pay_type==='sub'?'selected':''}>Sub (subcontractor)</option></select></label><label class="f" data-cowrap>Company (sub)<input type="text" data-co list="coList" value="${esc(e.company||'')}"></label><label class="f">Status<select data-active><option value="true" ${e.active?'selected':''}>Active</option><option value="false" ${!e.active?'selected':''}>Inactive (face data deleted)</option></select></label></div><div class="row"><label class="f">Class<select data-class>${clsOpts(e.class_id)}</select></label></div>` + noteField(), async m => {
+  // read the phone fresh (the employee list may not carry it); a failed read just shows it blank and leaves it unchanged
+  let phoneKnown = false; try { const r = await sb.from('employees').select('phone').eq('id', e.id).maybeSingle(); if (!r.error && r.data){ e = Object.assign({}, e, { phone: r.data.phone }); phoneKnown = true; } } catch (_) {}
+  const done = modal('Edit employee', `<div class="row"><label class="f">Name<input type="text" data-name value="${esc(e.name)}"></label><label class="f">Employee #<input type="text" data-code value="${esc(e.code||'')}"></label><label class="f">Phone<input type="tel" data-phone value="${esc(e.phone||'')}"></label></div><div class="note" style="margin:-4px 0 8px">Phone is updated from the Smartsheet Employee number sheet when it has one for this Employee #; type it here for subs.</div><div class="row"><label class="f">Pay type<select data-pay><option value="hourly" ${e.pay_type==='hourly'?'selected':''}>Hourly</option><option value="salary" ${e.pay_type==='salary'?'selected':''}>Salary</option><option value="sub" ${e.pay_type==='sub'?'selected':''}>Sub (subcontractor)</option></select></label><label class="f" data-cowrap>Company (sub)<input type="text" data-co list="coList" value="${esc(e.company||'')}"></label><label class="f">Status<select data-active><option value="true" ${e.active?'selected':''}>Active</option><option value="false" ${!e.active?'selected':''}>Inactive (face data deleted)</option></select></label></div><div class="row"><label class="f">Class<select data-class>${clsOpts(e.class_id)}</select></label></div>` + noteField(), async m => {
     const note = needNote(m); const upd = { name: m.querySelector('[data-name]').value.trim(), code: m.querySelector('[data-code]').value.trim() || null, pay_type: m.querySelector('[data-pay]').value, active: m.querySelector('[data-active]').value === 'true', class_id: m.querySelector('[data-class]').value || null };
     upd.company = needCo(upd.pay_type, m.querySelector('[data-co]').value.trim());
+    const ph = m.querySelector('[data-phone]').value.trim() || null; if (phoneKnown || ph) upd.phone = ph;
     if (!upd.active) upd.face_descs = null; const { error } = await sb.from('employees').update(upd).eq('id', e.id); if (error) throw new Error(error.message);
     await audit('employee_edited', e.id, e, upd, note); toast('Saved'); renderEmployees(); });
   const m = document.querySelector('.modal:last-of-type'), ps = m.querySelector('[data-pay]'), cw = m.querySelector('[data-cowrap]');
@@ -939,9 +943,9 @@ async function editEmp(e){
 $('eAdd').onclick = async () => {
   const name = $('eName').value.trim(); if (!name){ toast('Name is required'); return; }
   let company; try { company = needCo($('ePay').value, $('eCo').value.trim()); } catch (er) { toast(er.message); return; }
-  const row = { name, code: $('eCode').value.trim() || null, pay_type: $('ePay').value, company, site_id: $('eSite').value || null, schedule_id: $('eSched').value || null, class_id: $('eClass').value || null };
+  const row = { name, code: $('eCode').value.trim() || null, phone: $('ePhone').value.trim() || null, pay_type: $('ePay').value, company, site_id: $('eSite').value || null, schedule_id: $('eSched').value || null, class_id: $('eClass').value || null };
   const { data, error } = await sb.from('employees').insert(row).select().single(); if (error){ toast(error.message); return; }
-  await audit('employee_added', data.id, null, row, 'added on review page'); $('eName').value = ''; $('eCode').value = ''; $('eClass').value = ''; $('eCo').value = ''; toast(name + ' added'); renderEmployees();
+  await audit('employee_added', data.id, null, row, 'added on review page'); $('eName').value = ''; $('eCode').value = ''; $('ePhone').value = ''; $('eClass').value = ''; $('eCo').value = ''; toast(name + ' added'); renderEmployees();
 };
 
 // ========== SITES ==========
@@ -1068,7 +1072,7 @@ async function loadHeadcount(){
     if (error) throw new Error(error.message);
     const ids = [...new Set(punches.map(p => p.employee_id))];
     let emps = [];
-    for (let i = 0; i < ids.length; i += 150){ const r = await sb.from('employees').select('id,code,name,pay_type,company,class_id,schedule_id').in('id', ids.slice(i, i + 150)); if (r.error) throw new Error(r.error.message); emps = emps.concat(r.data || []); }
+    for (let i = 0; i < ids.length; i += 150){ const r = await sb.from('employees').select('id,code,name,pay_type,company,class_id,schedule_id,phone').in('id', ids.slice(i, i + 150)); if (r.error) throw new Error(r.error.message); emps = emps.concat(r.data || []); }
     const on = [], gone = [];
     emps.forEach(e => {
       const sal = e.pay_type === 'salary', ps = punches.filter(p => p.employee_id === e.id), last = ps[ps.length - 1], sched = sal ? hcLatestSched(site.id) : schedById(e.schedule_id);
@@ -1105,8 +1109,8 @@ function renderHeadcount(){
   const lunch = on.filter(x => x.status === 'lunch').length, subs = on.filter(x => isSub(x.e)).length;
   $('hcTitle').textContent = `${site.name} — ${on.length} on site as of ${hcWhen(at, tz)}`;
   $('hcKpi').innerHTML = `<div><b>${on.length}</b><span>on site now</span></div><div><b>${on.length - lunch}</b><span>punched in</span></div><div><b>${lunch}</b><span>out at lunch</span></div><div><b>${on.length - subs}</b><span>AIME crew</span></div><div><b>${subs}</b><span>subs</span></div>${gone.length ? `<div><b>${gone.length}</b><span>not counted (see below)</span></div>` : ''}`;
-  const row = x => `<tr><td><b>${esc(x.e.name)}</b>${x.e.code ? ' <span class="note">#' + esc(x.e.code) + '</span>' : ''}</td><td>${clsCode(x.e.class_id) ? '<span class="code">' + esc(clsCode(x.e.class_id)) + '</span>' : '<span class="note">—</span>'}</td><td>${x.firstIn ? Rules.fmtTime(x.firstIn, tz) : '—'}</td><td>${x.status === 'lunch' ? `<span class="badge lunch">out at lunch since ${Rules.fmtTime(x.last.ts, tz)}</span>` : x.status === 'in' && HC.gone.includes(x) ? `<span class="badge flag">in since ${Rules.fmtTime(x.last.ts, tz)}</span>` : '<span class="badge in">punched in</span>'}</td></tr>`;
-  const table = list => `<tr><th>Name</th><th>Class</th><th>Time in</th><th>Status</th></tr>` + hcGroups(list).map(([k, xs]) => `<tr class="hcGroup"><th colspan="4">${esc(k)} — ${xs.length}</th></tr>` + xs.map(row).join('')).join('');
+  const row = x => `<tr><td><b>${esc(x.e.name)}</b>${x.e.code ? ' <span class="note">#' + esc(x.e.code) + '</span>' : ''}</td><td>${x.e.phone ? `<a href="tel:${esc(String(x.e.phone).replace(/[^0-9+]/g, ''))}">${esc(x.e.phone)}</a>` : '<span class="note">—</span>'}</td><td>${clsCode(x.e.class_id) ? '<span class="code">' + esc(clsCode(x.e.class_id)) + '</span>' : '<span class="note">—</span>'}</td><td>${x.firstIn ? Rules.fmtTime(x.firstIn, tz) : '—'}</td><td>${x.status === 'lunch' ? `<span class="badge lunch">out at lunch since ${Rules.fmtTime(x.last.ts, tz)}</span>` : x.status === 'in' && HC.gone.includes(x) ? `<span class="badge flag">in since ${Rules.fmtTime(x.last.ts, tz)}</span>` : '<span class="badge in">punched in</span>'}</td></tr>`;
+  const table = list => `<tr><th>Name</th><th>Phone</th><th>Class</th><th>Time in</th><th>Status</th></tr>` + hcGroups(list).map(([k, xs]) => `<tr class="hcGroup"><th colspan="5">${esc(k)} — ${xs.length}</th></tr>` + xs.map(row).join('')).join('');
   $('hcTable').innerHTML = on.length ? table(on) : '<tr><td class="note">No one is punched in at this site right now.</td></tr>';
   $('hcGoneCard').classList.toggle('hidden', !gone.length); $('hcGone').innerHTML = gone.length ? table(gone) : '';
   $('hcDev').innerHTML = dev.size ? [...dev.entries()].sort().map(([d, ts]) => `<div><b>${esc(d)}</b> — last punch ${hcWhen(ts, tz)}</div>`).join('') + '<div style="margin-top:4px">A tablet that has been quiet for a long time during a shift may be offline; its punches arrive when it reconnects.</div>' : 'No punches from any tablet at this site in the last 20 hours.';
@@ -1115,7 +1119,7 @@ function renderHeadcount(){
 function hcText(){
   const { site, at, on, gone } = HC, tz = site.timezone, lunch = on.filter(x => x.status === 'lunch').length;
   const L = [`HEADCOUNT — ${site.name} — ${hcWhen(at, tz)}`, `Total on site: ${on.length} (${on.length - lunch} punched in, ${lunch} out at lunch)`, ''];
-  hcGroups(on).forEach(([k, xs]) => { L.push(`${k} — ${xs.length}`); xs.forEach((x, i) => L.push(`${i + 1}. ${x.e.name}${clsCode(x.e.class_id) ? ' — ' + clsCode(x.e.class_id) : ''} — in ${x.firstIn ? Rules.fmtTime(x.firstIn, tz) : '?'}${x.status === 'lunch' ? ' (out at lunch since ' + Rules.fmtTime(x.last.ts, tz) + ')' : ''}`)); L.push(''); });
+  hcGroups(on).forEach(([k, xs]) => { L.push(`${k} — ${xs.length}`); xs.forEach((x, i) => L.push(`${i + 1}. ${x.e.name}${x.e.phone ? ' — ' + x.e.phone : ''}${clsCode(x.e.class_id) ? ' — ' + clsCode(x.e.class_id) : ''} — in ${x.firstIn ? Rules.fmtTime(x.firstIn, tz) : '?'}${x.status === 'lunch' ? ' (out at lunch since ' + Rules.fmtTime(x.last.ts, tz) + ')' : ''}`)); L.push(''); });
   if (!on.length) L.push('No one is punched in right now.', '');
   if (gone.length){ L.push(`Not counted — still punched in more than ${HC_STALE_H} hrs after their shift (likely missed punch-out): ${gone.map(x => x.e.name).join(', ')}`, ''); }
   L.push('From the AIME Time Clock. Punches from a tablet that is offline appear once it reconnects.');
