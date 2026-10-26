@@ -541,18 +541,22 @@ async function computeWeekFor(site, dateVal){
   const ids = new Set(emps.map(e => e.id)); const extra = [...new Set(punches.map(p => p.employee_id))].filter(id => !ids.has(id));
   let more = []; if (extra.length){ const r = await sb.from('employees').select(EMP_COLS).in('id', extra); more = r.data || []; }
   const people = [...emps, ...more].sort((a,b) => a.name.localeCompare(b.name));
+  // salaried punches are for the headcount only — they never affect pay, flags or exports
+  const salIds = new Set(people.filter(e => e.pay_type === 'salary').map(e => e.id));
+  const payPunches = punches.filter(p => !salIds.has(p.employee_id));
   const rows = people.map(e => {
     const sched = schedById(e.schedule_id);
-    const mine = punches.filter(p => p.employee_id === e.id).map(p => Object.assign({}, p, { work_date: Rules.workDate(p.ts, sched, site.timezone) }));
+    const mine = payPunches.filter(p => p.employee_id === e.id).map(p => Object.assign({}, p, { work_date: Rules.workDate(p.ts, sched, site.timezone) }));
     const dayRes = days.map(dk => { const ps = mine.filter(p => p.work_date === dk); const adj = (adjs||[]).find(a => a.employee_id === e.id && a.work_date === dk) || null;
       const r = Rules.computeDay({dateKey: dk, punches: ps, sched: e.pay_type === 'salary' ? sched : sched, site, adj}); r.punches = ps; r.adjRow = adj; return r; });
     const wk = e.pay_type === 'salary' ? {days:0, worked:0, breaks:0, adj:0, pto:0, guar:0, paid:0, reg:40, ot:0, total:40, otEquiv:40, flagged:0, salary:true, ts2s: Rules.round2(dayRes.reduce((a,d) => a + (d.ts2s||0), 0)), th2s: Rules.round2(dayRes.reduce((a,d) => a + (d.th2s||0), 0))} : Rules.computeWeek(dayRes);
     return { emp: e, sched, days: dayRes, week: wk };
-  }).filter(r => { const worked = r.days.some(d => d.punches.length || d.pto || d.adj || d.ts2s || d.th2s);
+  }).filter(r => { if (r.emp.pay_type === 'salary') return r.emp.site_id === site.id && r.emp.active !== false;
+    const worked = r.days.some(d => d.punches.length || d.pto || d.adj || d.ts2s || d.th2s);
     // inactive people only appear if they actually punched (or had time added) this week
     if (r.emp.active === false) return worked;
     return worked || r.week.total > 0 || r.emp.site_id === site.id; });
-  return { site, ws, days, rows, punches, close: (closes || []).find(c => !c.reopened_at) || null, closeHist: closes || [] };
+  return { site, ws, days, rows, punches: payPunches, close: (closes || []).find(c => !c.reopened_at) || null, closeHist: closes || [] };
 }
 function renderWeek(){
   const { site, ws, rows } = RV; const tot = k => Rules.round2(rows.reduce((a, r) => a + (r.week[k]||0), 0));
@@ -591,7 +595,7 @@ async function leaveUnpaid({ r, d }){
 }
 function detailHtml(r){
   const tz = RV.site.timezone, w = r.week;
-  if (w.salary) return `<div class="detailBox note">Salaried — does not punch. Fixed 40 hrs at ${esc(RV.site.name)}.</div>`;
+  if (w.salary) return `<div class="detailBox note">Salaried — fixed 40 hrs at ${esc(RV.site.name)}. Their punches are only used for the site headcount and don't affect pay.</div>`;
   const sum = `<div class="wkSum"><span>Worked <b>${w.worked}</b></span><span>+ Breaks <b>${w.breaks}</b></span>${w.adj ? `<span>+ Adj <b>${w.adj}</b></span>` : ''}<span>= Paid toward 40 <b>${w.paid}</b></span><span>Regular <b>${w.reg}</b></span><span>OT <b${w.ot ? ' style="color:#8a2d25"' : ''}>${w.ot || 0}</b></span>${w.pto ? `<span>PTO <b>${w.pto}</b></span>` : ''}${w.guar ? `<span>Guaranteed (straight) <b>${w.guar}</b></span>` : ''}<span>Total paid <b>${w.total}</b></span>${w.ts2s || w.th2s ? `<span class="note">Travel, logged only (not in totals): site&rarr;site <b>${w.ts2s}</b> &middot; home&rarr;site <b>${w.th2s}</b></span>` : ''}</div>`;
   let run = 0;
   const body = r.days.map((d, di) => {
@@ -1048,6 +1052,13 @@ $('hcSite').onchange = () => { lsSet('hcSite', $('hcSite').value); loadHeadcount
 $('hcTo').onchange = () => { if (HC) lsSet('hcTo:' + HC.site.id, $('hcTo').value.trim()); };
 const HC_LUNCH_MIN = 90;      // punched out this recently, before the end of their shift = counted as out at lunch
 const HC_STALE_H = 2;         // still punched in this long after scheduled end = probably a missed punch-out, listed separately
+// salaried have no schedule of their own: judge them against the site's shift that ends latest
+function hcLatestSched(siteId){
+  // day shifts first (a night shift ending at 5 AM would drop someone who punched in at 7 AM); night shifts only if that's all the site has
+  const mins = s => { const [h, m] = String(s.end_time).slice(0,5).split(':').map(Number); return h*60 + m; };
+  const all = schedules.filter(s => s.site_id === siteId), day = all.filter(s => !Rules.crossesMidnight(s));
+  return (day.length ? day : all).sort((a, b) => mins(b) - mins(a))[0] || null;
+}
 async function loadHeadcount(){
   const site = siteById($('hcSite').value); if (!site){ toast('Pick a site'); return; }
   const tz = site.timezone, now = new Date();
@@ -1060,14 +1071,16 @@ async function loadHeadcount(){
     for (let i = 0; i < ids.length; i += 150){ const r = await sb.from('employees').select('id,code,name,pay_type,company,class_id,schedule_id').in('id', ids.slice(i, i + 150)); if (r.error) throw new Error(r.error.message); emps = emps.concat(r.data || []); }
     const on = [], gone = [];
     emps.forEach(e => {
-      const ps = punches.filter(p => p.employee_id === e.id), last = ps[ps.length - 1], sched = schedById(e.schedule_id);
+      const sal = e.pay_type === 'salary', ps = punches.filter(p => p.employee_id === e.id), last = ps[ps.length - 1], sched = sal ? hcLatestSched(site.id) : schedById(e.schedule_id);
       const wd = Rules.workDate(last.ts, sched, tz), shift = ps.filter(p => Rules.workDate(p.ts, sched, tz) === wd);
       const firstIn = shift.find(p => p.type === 'in') || [...ps].reverse().find(p => p.type === 'in' && new Date(last.ts) - new Date(p.ts) < 14*3600e3), win = Rules.schedWindow(wd, sched, tz);
       const item = { e, firstIn: firstIn ? firstIn.ts : null, last };
       if (last.type === 'in'){
         const staleAt = win.end ? win.end.getTime() + HC_STALE_H*3600e3 : new Date(last.ts).getTime() + 14*3600e3;
+        if (sal){ if (now.getTime() <= staleAt) on.push(Object.assign(item, { status: 'in' })); return; }   // salaried: no missed-punch-out list
         (now.getTime() > staleAt ? gone : on).push(Object.assign(item, { status: 'in' }));
       } else {
+        if (sal) return;   // salaried punch-out = left the site (no lunch rules)
         const mins = (now - new Date(last.ts)) / 60000, beforeEnd = !win.end || new Date(last.ts).getTime() < win.end.getTime() - 30*60e3;
         if (mins <= HC_LUNCH_MIN && beforeEnd && firstIn) on.push(Object.assign(item, { status: 'lunch' }));
       }
