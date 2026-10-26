@@ -228,6 +228,9 @@ async function pull(){
     site = sites[0] || site; if (site) $('siteName').textContent = site.name;
     const { data: sch, error: e2 } = await sb.from('schedules').select('*').eq('site_id', site.id); if (e2) throw e2; schedules = sch;
     const { data: emps, error: e3 } = await sb.from('employees').select('id,code,name,pay_type,active,site_id,schedule_id,face_descs').eq('site_id', site.id); if (e3) throw e3;
+    // salaried staff can punch (for the headcount only) at any site's tablet; needs schema_patch12.sql, else only this site's salaried show up
+    const { data: sal } = await sb.from('employees').select('id,code,name,pay_type,active,site_id,schedule_id,face_descs').eq('pay_type', 'salary').eq('active', true);
+    const seen = new Set(emps.map(e => e.id)); (sal || []).forEach(e => { if (!seen.has(e.id)) emps.push(e); });
     employees = emps; await DB.clear('employees'); await DB.putAll('employees', employees); buildMatcher();
     const since = new Date(Date.now() - 36*3600e3).toISOString();
     const { data: ps, error: e4 } = await sb.from('punches').select('id,employee_id,site_id,type,ts,method,flag,device_id').eq('site_id', site.id).gte('ts', since); if (e4) throw e4;
@@ -253,8 +256,12 @@ const audit = (action, target, after, note) => sb.from('audit').insert({ actor: 
 
 // ================= punch logic (same rules as workbook) =================
 const lastPunch = empId => punches.filter(p => p.employee_id === empId).sort((a,b) => b.ts.localeCompare(a.ts))[0] || null;
+const isSalary = e => e && e.pay_type === 'salary';
+const atThisSite = e => e && e.site_id === (site && site.id);
 function stateFor(emp){
   const lp = lastPunch(emp.id); if (!lp) return {next:'in'};
+  // Salaried punches are for the headcount only: no lockout, punching out is optional, a left-open punch-in just expires
+  if (isSalary(emp)){ if (lp.type === 'in' && (Date.now() - new Date(lp.ts)) / 3600e3 <= 18) return {next:'out', since:lp}; return {next:'in', since: lp.type === 'out' ? lp : null}; }
   // An open punch-in is still "this shift" for up to 18 h, whatever the calendar date (night shifts cross midnight). Older than that = forgot to punch out.
   if (lp.type === 'in'){ if ((Date.now() - new Date(lp.ts)) / 3600e3 > 18) return {next:'in', staleIn:lp}; return {next:'out', since:lp}; }
   const lock = (site && site.lockout_min) ?? 60, ageMin = (Date.now() - new Date(lp.ts)) / 60000;
@@ -263,7 +270,7 @@ function stateFor(emp){
 }
 async function punch(type){
   if (!current) return; const st = stateFor(current); if (type === 'in' && st.next === 'locked') return;
-  const rec = { id: uid(), employee_id: current.id, site_id: site.id, type, ts: new Date().toISOString(), method: currentMethod, device_id: deviceId, flag: currentMethod === 'fallback' ? 'manual pick - verify photo' : '', synced:false };
+  const rec = { id: uid(), employee_id: current.id, site_id: site.id, type, ts: new Date().toISOString(), method: currentMethod, device_id: deviceId, flag: currentMethod === 'fallback' && !isSalary(current) ? 'manual pick - verify photo' : '', synced:false };
   if (currentMethod === 'fallback' && window._fallbackPhoto){ rec.photo = window._fallbackPhoto; window._fallbackPhoto = null; }
   if (st.staleIn) rec.flag = (rec.flag ? rec.flag + '; ' : '') + 'previous shift left open';
   punches.push(rec); await DB.put('punches', rec); showDone(current, type, rec); push();
@@ -286,6 +293,7 @@ function showEmployee(emp, method){
   if (st.next === 'locked'){ w.className = 'who lock';
     const tick = () => { if (current !== emp) return; const s = Math.max(0, Math.round((st.until - Date.now())/1000)); $('whoSub').innerHTML = `Punched out at ${fmtT(st.since.ts)}. You can punch back in at <b>${fmtT(st.until)}</b><br><span class="big">${Math.floor(s/60)}:${pad(s%60)}</span>`; if (s > 0) setTimeout(tick, 1000); else showEmployee(emp, method); }; tick();
   } else if (st.next === 'out'){ w.className = 'who out'; $('whoSub').textContent = 'Punched in at ' + fmtT(st.since.ts) + tail; }
+  else if (isSalary(emp)){ w.className = 'who in'; $('whoSub').textContent = (st.since ? 'Last out ' + fmtT(st.since.ts) + ' · ' : '') + 'Salaried · punch in for the site headcount' + tail; }
   else { w.className = 'who in'; const sc = schedOf(emp); $('whoSub').textContent = (st.since ? 'Last out ' + fmtT(st.since.ts) + ' · ' : '') + 'Schedule ' + sc.name + ' ' + String(sc.start_time).slice(0,5) + '–' + String(sc.end_time).slice(0,5) + tail; }
   $('status').textContent = emp.name;
   clearTimeout(idleTimer); idleTimer = setTimeout(() => { if (current === emp && recognizing) resetKiosk(); }, method === 'fallback' ? 30000 : (st.next === 'locked' ? 8000 : 12000));
@@ -315,7 +323,7 @@ $('btnNotMe').onclick = () => { renderPick(''); $('pickSearch').value = ''; $('p
 $('pickClose').onclick = () => $('pick').classList.add('hidden');
 $('pickSearch').oninput = e => renderPick(e.target.value);
 function renderPick(q){ q = q.trim().toLowerCase();
-  const list = employees.filter(e => e.active && e.pay_type !== 'salary' && (!q || e.name.toLowerCase().includes(q))).sort((a,b) => a.name.localeCompare(b.name));
+  const list = employees.filter(e => e.active && (!q || e.name.toLowerCase().includes(q))).sort((a,b) => a.name.localeCompare(b.name));
   $('pickList').innerHTML = list.map(e => `<button class="item" data-id="${e.id}">${e.name}<small>#${e.code || ''}</small></button>`).join('') || '<div class="note">No matching names.</div>';
   $('pickList').querySelectorAll('.item').forEach(b => b.onclick = () => pickEmployee(b.dataset.id)); }
 function pickEmployee(id){ const emp = empById(id); if (!emp) return;
@@ -354,7 +362,7 @@ function renderToday(){
   $('todayStats').innerHTML = `<div class="card"><h3>Punches, last 24 hrs (this site)</h3><div style="font-size:32px;font-weight:800">${todays.length}</div></div><div class="card"><h3>Currently in</h3><div style="font-size:32px;font-weight:800">${inNow}</div></div>`;
   $('todayList').innerHTML = todays.length ? '<table><tr><th>Time</th><th>Employee</th><th></th><th></th></tr>' + todays.map(p => `<tr><td>${dayKey(p.ts) !== dayKey(Date.now()) ? '<span class="note">' + new Date(p.ts).toLocaleDateString(undefined,{weekday:'short'}) + '</span> ' : ''}${fmtT(p.ts)}</td><td>${(empById(p.employee_id)||{}).name || '—'}</td><td><span class="badge">${p.type.toUpperCase()}</span></td><td>${p.flag ? '<span class="badge flag">FLAG</span> ' + p.flag : ''}${p.synced ? '' : ' <span class="badge">not synced yet</span>'}</td></tr>`).join('') + '</table>' : '<div class="note">No punches yet today.</div>';
 }
-function renderEnrollSelect(){ if (typeof disarmRemove === 'function' && removeArm) disarmRemove(); const list = employees.filter(e => e.active && e.pay_type !== 'salary').sort((a,b) => a.name.localeCompare(b.name)); $('enEmp').innerHTML = list.map(e => `<option value="${e.id}">${e.name}${e.face_descs && e.face_descs.length ? ' ✓ enrolled' : ' — not enrolled'}</option>`).join('') || '<option value="">No employees assigned to this site</option>'; $('enMsg').textContent = ''; }
+function renderEnrollSelect(){ if (typeof disarmRemove === 'function' && removeArm) disarmRemove(); const list = employees.filter(e => e.active && atThisSite(e)).sort((a,b) => a.name.localeCompare(b.name)); $('enEmp').innerHTML = list.map(e => `<option value="${e.id}">${e.name}${e.face_descs && e.face_descs.length ? ' ✓ enrolled' : ' — not enrolled'}</option>`).join('') || '<option value="">No employees assigned to this site</option>'; $('enMsg').textContent = ''; }
 $('btnCapture').onclick = async () => {
   const emp = empById($('enEmp').value); if (!emp){ $('enMsg').textContent = 'Pick an employee first.'; return; }
   if (!$('consent').checked){ $('enMsg').textContent = 'Tick the consent box after telling the employee what is stored.'; return; }
@@ -389,7 +397,7 @@ $('btnRemoveFace').onclick = async () => {
   $('btnRemoveFace').disabled = false;
 };
 function renderRoster(){
-  const list = employees.filter(e => e.active).sort((a,b) => a.name.localeCompare(b.name));
+  const list = employees.filter(e => e.active && atThisSite(e)).sort((a,b) => a.name.localeCompare(b.name));
   $('rosterList').innerHTML = list.map(e => `<div class="item"><div>${e.name}<small>#${e.code||''} · ${e.pay_type} · ${e.face_descs && e.face_descs.length ? 'enrolled' : 'not enrolled'}</small></div><div class="r">${e.pay_type === 'salary' ? '' : `<select data-s="${e.id}" class="sm" style="width:auto">${schedules.map(s => `<option value="${s.id}" ${s.id === e.schedule_id ? 'selected' : ''}>${s.name}</option>`).join('')}</select>`}</div></div>`).join('') || '<div class="note">No employees assigned to this site.</div>';
   $('rosterList').querySelectorAll('[data-s]').forEach(s => s.onchange = async () => { const e = empById(s.dataset.s); const { error } = await sb.from('employees').update({ schedule_id: s.value }).eq('id', e.id); if (error){ toast('Could not save: ' + error.message); return; } e.schedule_id = s.value; await DB.put('employees', e); audit('schedule_changed', e.id, {to: s.value, by: supUser.user_id}); toast('Schedule updated'); });
 }
