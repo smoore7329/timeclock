@@ -214,6 +214,11 @@ const toast = (msg, ms=2500) => { const t = document.createElement('div'); t.cla
 let me = null, site = null, schedules = [], employees = [], punches = [], matcher = null, deviceId = null;
 let current = null, currentMethod = 'face', idleTimer = null, stable = {id:null, n:0}, recognizing = true, supOpen = false, supUser = null;
 let lastSync = null, syncErr = null;
+// camera health: a stalled stream keeps showing its last frame; never recognize from it
+let lastFrameAt = Date.now(), frameSeq = 0, procSeq = -1, lastDesc = null, sameDescN = 0, camBusy = false, camRestarts = [], lastActivity = Date.now(), wakeLock = null;
+const bootAt = Date.now();
+const recentPunch = new Map();   // employee id -> time until which the face path ignores them (after a punch)
+const PUNCH_COOLDOWN_MS = 60000, STALL_MS = 4000;
 
 const empById = id => employees.find(e => e.id === id);
 const schedOf = e => schedules.find(s => s.id === e.schedule_id) || schedules[0] || {name:'—', start_time:'', end_time:''};
@@ -264,7 +269,7 @@ function stateFor(emp){
   if (isSalary(emp)){ if (lp.type === 'in' && (Date.now() - new Date(lp.ts)) / 3600e3 <= 18) return {next:'out', since:lp}; return {next:'in', since: lp.type === 'out' ? lp : null}; }
   // An open punch-in is still "this shift" for up to 18 h, whatever the calendar date (night shifts cross midnight). Older than that = forgot to punch out.
   if (lp.type === 'in'){ if ((Date.now() - new Date(lp.ts)) / 3600e3 > 18) return {next:'in', staleIn:lp}; return {next:'out', since:lp}; }
-  const lock = (site && site.lockout_min) ?? 60, ageMin = (Date.now() - new Date(lp.ts)) / 60000;
+  const lock = (site && Number(site.lockout_min) > 0) ? Number(site.lockout_min) : 60, ageMin = (Date.now() - new Date(lp.ts)) / 60000;
   if (ageMin < lock) return {next:'locked', until: new Date(new Date(lp.ts).getTime() + lock*60000), since:lp};
   return {next:'in', since:lp};
 }
@@ -273,6 +278,7 @@ async function punch(type){
   const rec = { id: uid(), employee_id: current.id, site_id: site.id, type, ts: new Date().toISOString(), method: currentMethod, device_id: deviceId, flag: currentMethod === 'fallback' && !isSalary(current) ? 'manual pick - verify photo' : '', synced:false };
   if (currentMethod === 'fallback' && window._fallbackPhoto){ rec.photo = window._fallbackPhoto; window._fallbackPhoto = null; }
   if (st.staleIn) rec.flag = (rec.flag ? rec.flag + '; ' : '') + 'previous shift left open';
+  recentPunch.set(current.id, Date.now() + PUNCH_COOLDOWN_MS); lastActivity = Date.now();
   punches.push(rec); await DB.put('punches', rec); showDone(current, type, rec); push();
 }
 function showDone(emp, type, rec){
@@ -287,7 +293,7 @@ function resetKiosk(){
   $('btnIn').classList.add('hidden'); $('btnOut').classList.add('hidden'); $('btnNotMe').classList.remove('hidden'); $('btnClear').classList.add('hidden'); $('status').textContent = 'Step up to the camera';
 }
 function showEmployee(emp, method){
-  current = emp; currentMethod = method; const st = stateFor(emp); const w = $('who'); $('whoName').textContent = emp.name;
+  lastActivity = Date.now(); current = emp; currentMethod = method; const st = stateFor(emp); const w = $('who'); $('whoName').textContent = emp.name;
   $('btnIn').classList.toggle('hidden', st.next !== 'in'); $('btnOut').classList.toggle('hidden', st.next !== 'out'); $('btnClear').classList.remove('hidden');
   const tail = method === 'fallback' ? ' · manual pick, photo will be reviewed' : '';
   if (st.next === 'locked'){ w.className = 'who lock';
@@ -303,17 +309,23 @@ $('btnIn').onclick = () => punch('in'); $('btnOut').onclick = () => punch('out')
 // ================= recognition loop =================
 async function loop(){
   const v = $('video'), c = $('overlay');
-  if (recognizing && !supOpen && v.readyState >= 2 && $('pick').classList.contains('hidden') && $('pinSheet').classList.contains('hidden')){
+  const fresh = frameSeq !== procSeq && Date.now() - lastFrameAt < 1500;
+  if (recognizing && !supOpen && !camBusy && fresh && v.readyState >= 2 && $('pick').classList.contains('hidden') && $('pinSheet').classList.contains('hidden')){
+    procSeq = frameSeq;
     const det = await faceapi.detectSingleFace(v, new faceapi.TinyFaceDetectorOptions({inputSize:320, scoreThreshold:0.5})).withFaceLandmarks(true).withFaceDescriptor();
     if (c.width !== v.videoWidth){ c.width = v.videoWidth; c.height = v.videoHeight; }
     const ctx = c.getContext('2d'); ctx.clearRect(0,0,c.width,c.height);
     if (det){ const b = det.detection.box; let id = null;
+      // a live camera never gives two identical face signatures; identical = frozen picture
+      if (lastDesc && faceapi.euclideanDistance(lastDesc, det.descriptor) < 1e-4){ if (++sameDescN >= 3){ sameDescN = 0; lastDesc = null; restartCamera('frozen picture'); } setTimeout(() => requestAnimationFrame(loop), 60); return; }
+      sameDescN = 0; lastDesc = det.descriptor;
       if (matcher){ const m = matcher.findBestMatch(det.descriptor); if (m.label !== 'unknown') id = m.label; }
+      if (id && (recentPunch.get(id) || 0) > Date.now()){ if (!current){ const e = empById(id); $('status').textContent = 'Thanks' + (e ? ', ' + e.name.split(' ')[0] : '') + ' — you\'re all set. Next person, please.'; } id = null; ctx.lineWidth = 6; ctx.strokeStyle = '#43c47a'; ctx.strokeRect(b.x,b.y,b.width,b.height); stable = {id:null, n:0}; setTimeout(() => requestAnimationFrame(loop), 60); return; }
       ctx.lineWidth = 6; ctx.strokeStyle = id ? '#43c47a' : '#9fb0bd'; ctx.strokeRect(b.x,b.y,b.width,b.height);
       stable = stable.id === id ? {id, n:stable.n+1} : {id, n:1};
       if (id && stable.n >= 2 && (!current || (current.id !== id && currentMethod === 'face'))) showEmployee(empById(id), 'face');
       if (!id && !current) $('status').textContent = employees.length ? 'Not recognized yet — face the camera, or pick your name' : 'No employees assigned to this site yet';
-    } else if (!current) $('status').textContent = 'Step up to the camera';
+    } else { lastDesc = null; if (!current) $('status').textContent = 'Step up to the camera'; }
   }
   setTimeout(() => requestAnimationFrame(loop), 60);
 }
@@ -410,7 +422,46 @@ $('btnDisconnect').onclick = async () => { if (supUser.role !== 'admin'){ toast(
 function goFullscreen(){ if (window.matchMedia('(display-mode: fullscreen)').matches || window.matchMedia('(display-mode: standalone)').matches) return; const el = document.documentElement; if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen({ navigationUI: 'hide' }).catch(()=>{}); }
 document.addEventListener('pointerdown', goFullscreen, { passive: true });
 function tickClock(){ $('clock').textContent = fmtT(new Date()); setSync(); }
-async function startCamera(){ const v = $('video'); v.srcObject = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user', width:{ideal:1280}, height:{ideal:720}}, audio:false}); await new Promise(r => v.onloadedmetadata = r); await v.play(); }
+async function startCamera(){ const v = $('video'); const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user', width:{ideal:1280}, height:{ideal:720}}, audio:false});
+  v.srcObject = stream; await new Promise(r => { if (v.readyState >= 1) r(); else v.onloadedmetadata = r; }); await v.play();
+  const tr = stream.getVideoTracks()[0]; if (tr) tr.addEventListener('ended', () => restartCamera('camera ended'));
+  if ($('enVideo') && supOpen) $('enVideo').srcObject = stream;
+  lastFrameAt = Date.now(); watchFrames(v); }
+// count frames as they actually arrive from the camera
+let frameWatchV = null;
+function watchFrames(v){
+  if ('requestVideoFrameCallback' in HTMLVideoElement.prototype){
+    if (frameWatchV === v) return; frameWatchV = v;
+    const cb = () => { frameSeq++; lastFrameAt = Date.now(); v.requestVideoFrameCallback(cb); }; v.requestVideoFrameCallback(cb);
+  } else if (!frameWatchV){ frameWatchV = v;   // fallback: tiny pixel fingerprint, changes with sensor noise on a live camera
+    const c = document.createElement('canvas'); c.width = 32; c.height = 18; const x = c.getContext('2d', {willReadFrequently:true}); let prev = '';
+    setInterval(() => { if (v.readyState < 2) return; x.drawImage(v, 0, 0, 32, 18); const d = x.getImageData(0,0,32,18).data; let h = 0; for (let i = 0; i < d.length; i += 7) h = (h * 31 + d[i]) | 0; const k = String(h); if (k !== prev){ prev = k; frameSeq++; lastFrameAt = Date.now(); } }, 250);
+  }
+}
+async function restartCamera(why){
+  if (camBusy) return; camBusy = true; console.warn('camera restart:', why);
+  if (current && currentMethod === 'face'){ clearTimeout(idleTimer); resetKiosk(); }
+  $('status').textContent = 'Camera restarting…';
+  const now = Date.now(); camRestarts = camRestarts.filter(t => now - t < 10*60000); camRestarts.push(now);
+  audit('camera_restart', site && site.id, {why, count: camRestarts.length});
+  if (camRestarts.length > 3 && !supOpen){ location.reload(); return; }   // restarts are not helping: start the app fresh (punches are saved on the tablet)
+  try { const old = $('video').srcObject; if (old) old.getTracks().forEach(t => t.stop()); $('video').srcObject = null;
+    await new Promise(r => setTimeout(r, 500));
+    await Promise.race([startCamera(), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 10000))]);
+    if (!current) $('status').textContent = 'Step up to the camera';
+  } catch (e){ console.warn('camera restart failed', e); $('status').textContent = 'Camera problem — tell your supervisor'; if (!supOpen) setTimeout(() => location.reload(), 5000); }
+  lastDesc = null; sameDescN = 0; camBusy = false;
+}
+function cameraWatchdog(){
+  if (camBusy || document.hidden) return;
+  const s = $('video').srcObject, tr = s && s.getVideoTracks()[0];
+  if (!tr || tr.readyState === 'ended') restartCamera('no camera track');
+  else if (Date.now() - lastFrameAt > STALL_MS) restartCamera('no new frames for ' + Math.round((Date.now() - lastFrameAt)/1000) + 's');
+}
+async function keepAwake(){ try { if ('wakeLock' in navigator && !document.hidden && !wakeLock){ wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => wakeLock = null); } } catch (e) {} }
+document.addEventListener('visibilitychange', () => { if (!document.hidden){ keepAwake(); lastFrameAt = Date.now(); setTimeout(cameraWatchdog, STALL_MS + 500); } });
+// fresh start once a night (2–4 AM tablet time) when nobody has used it for 10 min and it has a connection
+function nightlyRefresh(){ const h = new Date().getHours(); if (h >= 2 && h < 4 && Date.now() - bootAt > 6*3600e3 && Date.now() - lastActivity > 10*60000 && !current && !supOpen && navigator.onLine && !punches.some(p => !p.synced)) location.reload(); }
 let profileErr = '';
 async function loadProfile(){ profileErr = ''; const { data: { user }, error: ue } = await sb.auth.getUser(); if (ue) profileErr = 'auth: ' + ue.message; if (!user) return null;
   const { data, error } = await sb.from('profiles').select('*').eq('user_id', user.id).maybeSingle(); if (error) profileErr = 'profile: ' + error.message + (error.details ? ' — ' + error.details : ''); else if (!data) profileErr = 'no profile row for user ' + user.id; else if (data.role !== 'device') profileErr = 'profile role is "' + data.role + '", not device'; return data; }
@@ -423,7 +474,7 @@ async function runKiosk(){
   if (!site){ $('lsub').innerHTML = '<div class="err">This tablet account has no site assigned. An admin needs to give it a site on the review page (Users).</div>'; return; }
   $('siteName').textContent = site.name; $('kiosk').classList.remove('hidden');
   $('lsub').textContent = 'Starting camera'; await startCamera(); $('loading').remove();
-  tickClock(); setInterval(tickClock, 1000); setInterval(push, 15000); setInterval(pull, 60000); window.addEventListener('online', () => { push(); pull(); }); window.addEventListener('offline', setSync);
+  tickClock(); setInterval(tickClock, 1000); setInterval(cameraWatchdog, 2000); setInterval(nightlyRefresh, 60000); keepAwake(); setInterval(push, 15000); setInterval(pull, 60000); window.addEventListener('online', () => { push(); pull(); }); window.addEventListener('offline', setSync);
   loop();
 }
 (async () => {
