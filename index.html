@@ -426,7 +426,8 @@ async function startCamera(){ const v = $('video'); const stream = await navigat
   v.srcObject = stream; await new Promise(r => { if (v.readyState >= 1) r(); else v.onloadedmetadata = r; }); await v.play();
   const tr = stream.getVideoTracks()[0]; if (tr) tr.addEventListener('ended', () => restartCamera('camera ended'));
   if ($('enVideo') && supOpen) $('enVideo').srcObject = stream;
-  lastFrameAt = Date.now(); watchFrames(v); }
+  if (tr) tr.addEventListener('mute', () => setTimeout(() => { if (tr.muted && !document.hidden) restartCamera('camera muted'); }, 3000));
+  lastFrameAt = Date.now(); lastPixelChangeAt = Date.now(); pixPrev = null; watchFrames(v); }
 // count frames as they actually arrive from the camera
 let frameWatchV = null;
 function watchFrames(v){
@@ -452,14 +453,34 @@ async function restartCamera(why){
   } catch (e){ console.warn('camera restart failed', e); $('status').textContent = 'Camera problem — tell your supervisor'; if (!supOpen) setTimeout(() => location.reload(), 5000); }
   lastDesc = null; sameDescN = 0; camBusy = false;
 }
+let lastPixelChangeAt = Date.now(), pixPrev = null, pixCtx = null;
+function pixelCheck(){
+  const v = $('video'); if (camBusy || document.hidden || v.readyState < 2 || !v.videoWidth) return;
+  if (!pixCtx){ const c = document.createElement('canvas'); c.width = 64; c.height = 64; pixCtx = c.getContext('2d', {willReadFrequently:true}); }
+  // full-resolution 64x64 patch from the middle (no downscaling, so sensor noise stays visible)
+  pixCtx.drawImage(v, Math.max(0, v.videoWidth/2 - 32), Math.max(0, v.videoHeight/2 - 32), 64, 64, 0, 0, 64, 64);
+  const d = pixCtx.getImageData(0, 0, 64, 64).data;
+  let changed = !pixPrev; if (pixPrev) for (let i = 0; i < d.length; i += 4){ if (d[i] !== pixPrev[i] || d[i+1] !== pixPrev[i+1]){ changed = true; break; } }
+  if (changed){ pixPrev = d; lastPixelChangeAt = Date.now(); }
+}
 function cameraWatchdog(){
+  pixelCheck();
+  if (!camBusy && !document.hidden && Date.now() - lastPixelChangeAt > 15000){ lastPixelChangeAt = Date.now(); restartCamera('picture unchanged 15s'); return; }
   if (camBusy || document.hidden) return;
   const s = $('video').srcObject, tr = s && s.getVideoTracks()[0];
   if (!tr || tr.readyState === 'ended') restartCamera('no camera track');
   else if (Date.now() - lastFrameAt > STALL_MS) restartCamera('no new frames for ' + Math.round((Date.now() - lastFrameAt)/1000) + 's');
 }
 async function keepAwake(){ try { if ('wakeLock' in navigator && !document.hidden && !wakeLock){ wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => wakeLock = null); } } catch (e) {} }
-document.addEventListener('visibilitychange', () => { if (!document.hidden){ keepAwake(); lastFrameAt = Date.now(); setTimeout(cameraWatchdog, STALL_MS + 500); } });
+let hiddenAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden){ hiddenAt = Date.now(); return; }
+  keepAwake(); lastFrameAt = Date.now(); lastPixelChangeAt = Date.now();
+  const offMs = hiddenAt ? Date.now() - hiddenAt : 0;
+  if (offMs > 20000) setTimeout(() => restartCamera('screen was off ' + Math.round(offMs/60000) + ' min'), 300);
+  else setTimeout(cameraWatchdog, STALL_MS + 500);
+  hiddenAt = 0;
+});
 // fresh start once a night (2–4 AM tablet time) when nobody has used it for 10 min and it has a connection
 function nightlyRefresh(){ const h = new Date().getHours(); if (h >= 2 && h < 4 && Date.now() - bootAt > 6*3600e3 && Date.now() - lastActivity > 10*60000 && !current && !supOpen && navigator.onLine && !punches.some(p => !p.synced)) location.reload(); }
 let profileErr = '';
