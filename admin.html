@@ -526,6 +526,10 @@ async function loadWeek(){
   if (RV_OPEN && !RV.rows.some(r => r.emp.id === RV_OPEN)) RV_OPEN = null;
   renderWeek(); $('rvBody').classList.remove('hidden'); $('rvExport').disabled = false;
 }
+// Supabase returns at most 1000 rows per request; page through so big sites don't silently lose their latest punches
+async function fetchAll(build){
+  const out = []; for (let i = 0; ; i += 1000){ const { data, error } = await build().range(i, i + 999); if (error) return { data: null, error }; out.push(...data); if (data.length < 1000) return { data: out, error: null }; }
+}
 // loads and runs the rules for one site-week; used by Review and Billing
 async function computeWeekFor(site, dateVal){
   if (!dateVal) throw new Error('Pick a date in the week.');
@@ -534,8 +538,8 @@ async function computeWeekFor(site, dateVal){
   const EMP_COLS = 'id,code,name,pay_type,active,site_id,schedule_id,class_id,company';
   const [{ data: emps, error: eErr }, { data: punches, error }, { data: adjs }, { data: closes, error: cErr }] = await Promise.all([
     sb.from('employees').select(EMP_COLS).eq('site_id', site.id),
-    sb.from('punches').select('*').eq('site_id', site.id).gte('ts', from).lt('ts', to).order('ts'),
-    sb.from('day_adjustments').select('*').gte('work_date', ws).lte('work_date', days[6]),
+    fetchAll(() => sb.from('punches').select('*').eq('site_id', site.id).gte('ts', from).lt('ts', to).order('ts').order('id')),
+    fetchAll(() => sb.from('day_adjustments').select('*').gte('work_date', ws).lte('work_date', days[6]).order('employee_id').order('work_date')),
     sb.from('week_closes').select('*').eq('site_id', site.id).eq('week_start', ws).order('closed_at', { ascending: false }) ]);
   const err1 = error || eErr || cErr; if (err1) throw new Error(/company/.test(err1.message) ? 'Run schema_patch6.sql in Supabase first — ' + err1.message : /class_id|week_closes/.test(err1.message) ? 'Run schema_patch5.sql in Supabase first — ' + err1.message : err1.message);
   // include people who punched here but are now assigned elsewhere
