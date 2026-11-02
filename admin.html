@@ -617,12 +617,15 @@ async function editPunches(r, di){
   await modal('Edit punches', html, async m => {
     const note = needNote(m); const changes = [];
     for (const inp of m.querySelectorAll('[data-p]')){ const p = d.punches[+inp.dataset.p]; const v = inp.value; const del = m.querySelector(`[data-del="${inp.dataset.p}"]`).checked;
-      if (del || !v){ changes.push(sb.from('punches').delete().eq('id', p.id)); changes.push(audit('punch_removed', p.id, p, null, note)); }
-      else { const ts = Rules.zoned(v.slice(0,10), v.slice(11,16), tz).toISOString(); if (ts !== p.ts){ changes.push(sb.from('punches').update({ ts, method: 'manual', reviewed: true }).eq('id', p.id)); changes.push(audit('punch_edited', p.id, {ts: p.ts}, {ts}, note)); } } }
+      if (del || !v){ changes.push({ label: 'delete ' + p.type.toUpperCase(), run: () => sb.from('punches').delete().eq('id', p.id), log: () => audit('punch_removed', p.id, p, null, note) }); }
+      else if (v !== local(p.ts)){ const ts = Rules.zoned(v.slice(0,10), v.slice(11,16), tz).toISOString(); changes.push({ label: p.type.toUpperCase() + ' ' + v.slice(11,16), run: () => sb.from('punches').update({ ts, method: 'manual', reviewed: true }).eq('id', p.id), log: () => audit('punch_edited', p.id, {ts: p.ts}, {ts}, note) }); } }
     const nt = m.querySelector('[data-newtype]').value, nv = m.querySelector('[data-newts]').value;
-    if (nt && nv){ const ts = Rules.zoned(nv.slice(0,10), nv.slice(11,16), tz).toISOString(); const id = 'm' + Date.now().toString(36); changes.push(sb.from('punches').insert({ id, employee_id: r.emp.id, site_id: RV.site.id, type: nt, ts, method: 'manual', flag: 'added by ' + me.display_name, reviewed: true })); changes.push(audit('punch_added', id, null, {type: nt, ts}, note)); }
+    if (nt && nv){ const ts = Rules.zoned(nv.slice(0,10), nv.slice(11,16), tz).toISOString(); const id = 'm' + Date.now().toString(36); changes.push({ label: 'add ' + nt.toUpperCase() + ' ' + nv.slice(11,16), run: () => sb.from('punches').insert({ id, employee_id: r.emp.id, site_id: RV.site.id, type: nt, ts, method: 'manual', flag: 'added by ' + me.display_name, reviewed: true }), log: () => audit('punch_added', id, null, {type: nt, ts}, note) }); }
     if (!changes.length) throw new Error('Nothing changed.');
-    const results = await Promise.all(changes); const err = results.find(x => x && x.error); if (err) throw new Error(err.error.message);
+    // write each punch first; the audit entry is only made for writes that actually saved
+    const failed = [];
+    for (const c of changes){ const res = await c.run(); if (res && res.error){ failed.push(c.label + ': ' + res.error.message); continue; } await c.log(); }
+    if (failed.length){ loadWeek(); const msg = 'NOT SAVED — ' + failed.join(' | '); toast(msg, 12000); throw new Error(msg); }
     toast('Saved'); loadWeek();
   });
 }
