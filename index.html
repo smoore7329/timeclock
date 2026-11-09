@@ -263,12 +263,24 @@ const audit = (action, target, after, note) => sb.from('audit').insert({ actor: 
 const lastPunch = empId => punches.filter(p => p.employee_id === empId).sort((a,b) => b.ts.localeCompare(a.ts))[0] || null;
 const isSalary = e => e && e.pay_type === 'salary';
 const atThisSite = e => e && e.site_id === (site && site.id);
+// Minutes since this employee's shift window last opened (3 h before scheduled start), in the site's time zone.
+function minsSinceWindowOpen(emp, now){
+  const sc = schedOf(emp); const m = /^(\d{1,2}):(\d{2})/.exec(String(sc && sc.start_time || '')); if (!m) return null;
+  let h, mi; try { const parts = new Intl.DateTimeFormat('en-US', { timeZone: (site && site.timezone) || undefined, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(now)); h = +parts.find(p => p.type === 'hour').value; mi = +parts.find(p => p.type === 'minute').value; } catch (e) { const d = new Date(now); h = d.getHours(); mi = d.getMinutes(); }
+  const open = (+m[1]) * 60 + (+m[2]) - 180; return (((h * 60 + mi) - open) % 1440 + 1440) % 1440;
+}
+// An open punch-in belongs to an earlier shift (forgot to punch out) when it is over 18 h old, OR over 10 h old and
+// from before today's shift window opened. Night shifts that cross midnight stay well under 10 h, so they still punch OUT.
+function isStaleIn(emp, lp){
+  const now = Date.now(), ageH = (now - new Date(lp.ts)) / 3600e3; if (ageH > 18) return true; if (ageH <= 10) return false;
+  const since = minsSinceWindowOpen(emp, now); if (since === null) return false;
+  return new Date(lp.ts).getTime() < now - since * 60000;
+}
 function stateFor(emp){
   const lp = lastPunch(emp.id); if (!lp) return {next:'in'};
   // Salaried punches are for the headcount only: no lockout, punching out is optional, a left-open punch-in just expires
-  if (isSalary(emp)){ if (lp.type === 'in' && (Date.now() - new Date(lp.ts)) / 3600e3 <= 18) return {next:'out', since:lp}; return {next:'in', since: lp.type === 'out' ? lp : null}; }
-  // An open punch-in is still "this shift" for up to 18 h, whatever the calendar date (night shifts cross midnight). Older than that = forgot to punch out.
-  if (lp.type === 'in'){ if ((Date.now() - new Date(lp.ts)) / 3600e3 > 18) return {next:'in', staleIn:lp}; return {next:'out', since:lp}; }
+  if (isSalary(emp)){ if (lp.type === 'in' && !isStaleIn(emp, lp)) return {next:'out', since:lp}; return {next:'in', since: lp.type === 'out' ? lp : null}; }
+  if (lp.type === 'in'){ if (isStaleIn(emp, lp)) return {next:'in', staleIn:lp}; return {next:'out', since:lp}; }
   const lock = (site && Number(site.lockout_min) > 0) ? Number(site.lockout_min) : 60, ageMin = (Date.now() - new Date(lp.ts)) / 60000;
   if (ageMin < lock) return {next:'locked', until: new Date(new Date(lp.ts).getTime() + lock*60000), since:lp};
   return {next:'in', since:lp};
