@@ -121,7 +121,7 @@
       <label class="f">Site<select id="eSite"></select></label><label class="f">Schedule<select id="eSched"></select></label>
       <label class="f">Class<select id="eClass"></select></label>
       <button class="btn" id="eAdd">Add</button></div></div>
-    <div class="card"><div class="row"><label class="f">Search<input type="text" id="eSearch" placeholder="name, # or sub company"></label><label class="f">Show<select id="eFilter"><option value="mine">My sites</option><option value="unassigned">Unassigned</option><option value="all">Everyone</option><option value="inactive">Inactive</option><option value="subs">Subs only</option><option value="crew">AIME crew only</option></select></label><label class="f">Site<select id="eSiteF"></select></label><label class="f">Class<select id="eClassF"></select></label></div>
+    <div class="card"><div class="row"><label class="f">Search<input type="text" id="eSearch" placeholder="name, # or sub company"></label><label class="f">Show<select id="eFilter"><option value="mine">My sites</option><option value="unassigned">Unassigned</option><option value="all">Everyone</option><option value="inactive">Inactive</option><option value="subs">Subs only</option><option value="crew">AIME crew only</option><option value="mgmt">Management only</option></select></label><label class="f">Site<select id="eSiteF"></select></label><label class="f">Class<select id="eClassF"></select></label></div>
       <div class="row hidden bulk" id="eBulk"><span><b id="eBulkN">0</b> selected</span><label class="f">Set class<select id="eBulkC"></select></label><button class="btn" id="eBulkGo">Apply to selected</button><button class="btn ghost" id="eBulkX">Clear selection</button></div>
       <div class="tableWrap"><table id="empTable"></table></div></div>
     <div class="card hidden" id="clsCard"><h2>Job classifications</h2>
@@ -142,6 +142,10 @@
       <div class="note" style="margin-top:6px">Who is at this site right now, AIME crew and subs, for an emergency roll call. People punched out for lunch are counted (they may still be nearby). A tablet that is offline sends its punches when it reconnects, so check the tablet times at the bottom.</div></div>
     <div id="hcBody" class="hidden">
       <div class="kpi" id="hcKpi"></div>
+      <div class="card" id="hcTodayCard"><h2 id="hcTodayTitle">Today</h2>
+        <div class="kpi" id="hcTodayKpi" style="margin-bottom:8px"></div>
+        <div class="note" id="hcTodayNote">Everyone with a punch at this site today, including people who have already left. A night shift counts on the day it punches out. Management = people with the Management box ticked on the Employees tab; everyone else, subs included, is labor.</div>
+        <div class="row" style="margin-top:10px"><button class="btn ok" id="hcForm" disabled>Open customer form</button><span class="note" id="hcFormMsg"></span></div></div>
       <div class="card"><h2 id="hcTitle">On site</h2><div class="tableWrap"><table id="hcTable"></table></div></div>
       <div class="card hidden" id="hcGoneCard"><h2>Not counted — still punched in long after their shift</h2><div class="note" style="margin-bottom:8px">Punched in, never punched out, and more than 2 hours past their scheduled end. Most likely a missed punch-out, but check if unsure.</div><div class="tableWrap"><table id="hcGone"></table></div></div>
       <div class="card"><h3>Tablets — most recent punch received</h3><div id="hcDev" class="note"></div></div>
@@ -861,12 +865,14 @@ let EMP_SEL = new Set(), EMP_LIST = [];
 $('eSearch').oninput = () => drawEmployees(); $('eFilter').onchange = () => drawEmployees();
 $('eSiteF').onchange = () => { const v = $('eSiteF').value; lsSet('eSiteF', v); if (v && v !== 'none' && isAdmin()){ $('eSite').value = v; fillSched($('eSched'), v); } drawEmployees(); }; $('eClassF').onchange = () => drawEmployees();
 async function renderEmployees(){
-  const [{ data, error }, cls, cos] = await Promise.all([sb.rpc('list_all_employees'), sb.rpc('employee_class_ids'), sb.rpc('employee_companies')]);
+  const [{ data, error }, cls, cos, mg] = await Promise.all([sb.rpc('list_all_employees'), sb.rpc('employee_class_ids'), sb.rpc('employee_companies'), sb.rpc('employee_mgmt_ids')]);
   if (error){ toast(error.message); return; } employeesAll = data || [];
   if (cls.error){ if (!renderEmployees.warned){ renderEmployees.warned = true; toast('Classifications not set up yet — run schema_patch5.sql in Supabase.', 7000); } }
   else { const m = new Map((cls.data || []).map(x => [x.id, x])); employeesAll.forEach(e => { const x = m.get(e.id); e.class_id = x ? x.class_id : null; }); }
   if (cos.error){ if (!renderEmployees.warnedCo){ renderEmployees.warnedCo = true; toast('Subs not set up yet — run schema_patch6.sql in Supabase.', 7000); } }
   else { const m = new Map((cos.data || []).map(x => [x.id, x.company])); employeesAll.forEach(e => { if (m.has(e.id)) e.company = m.get(e.id); }); }
+  if (mg.error){ if (!renderEmployees.warnedMg){ renderEmployees.warnedMg = true; toast('Management flag not set up yet — run schema_patch_hcform.sql in Supabase.', 7000); } }
+  else { const m = new Set((mg.data || []).map(x => x.id)); employeesAll.forEach(e => { e.is_management = m.has(e.id); }); }
   $('coList').innerHTML = [...new Set(employeesAll.filter(isSub).map(e => e.company).filter(Boolean))].sort().map(c => `<option value="${esc(c)}">`).join('');
   if (isAdmin()) renderClasses();
   drawEmployees();
@@ -874,9 +880,9 @@ async function renderEmployees(){
 function drawEmployees(){
   const q = $('eSearch').value.trim().toLowerCase(), f = $('eFilter').value, mine = new Set(mySites().map(s => s.id)), cf = $('eClassF').value, sf = $('eSiteF').value;
   const byCls = (val, fv) => !fv || (fv === 'none' ? !val : val === fv);
-  const list = EMP_LIST = employeesAll.filter(e => (f === 'all' ? e.active : f === 'inactive' ? !e.active : f === 'unassigned' ? (e.active && !e.site_id) : f === 'subs' ? (e.active && isSub(e)) : f === 'crew' ? (e.active && !isSub(e)) : (e.active && (sf ? true : mine.has(e.site_id))))).filter(e => !sf || (sf === 'none' ? !e.site_id : e.site_id === sf)).filter(e => !q || e.name.toLowerCase().includes(q) || (e.code||'').toLowerCase().includes(q) || (e.company||'').toLowerCase().includes(q)).filter(e => byCls(e.class_id, cf));
+  const list = EMP_LIST = employeesAll.filter(e => (f === 'all' ? e.active : f === 'inactive' ? !e.active : f === 'unassigned' ? (e.active && !e.site_id) : f === 'subs' ? (e.active && isSub(e)) : f === 'crew' ? (e.active && !isSub(e)) : f === 'mgmt' ? (e.active && e.is_management) : (e.active && (sf ? true : mine.has(e.site_id))))).filter(e => !sf || (sf === 'none' ? !e.site_id : e.site_id === sf)).filter(e => !q || e.name.toLowerCase().includes(q) || (e.code||'').toLowerCase().includes(q) || (e.company||'').toLowerCase().includes(q)).filter(e => byCls(e.class_id, cf));
   const adm = isAdmin(), allOn = list.length && list.every(e => EMP_SEL.has(e.id));
-  $('empTable').innerHTML = `<tr>${adm ? `<th><input type="checkbox" id="eChkAll" ${allOn ? 'checked' : ''} title="Select everyone shown"></th>` : ''}<th>Employee</th><th>#</th><th>Class</th><th>Pay</th><th>Site</th><th>Schedule</th><th>Face</th><th></th></tr>` + list.map(e => `<tr>${adm ? `<td><input type="checkbox" data-chk="${e.id}" ${EMP_SEL.has(e.id) ? 'checked' : ''}></td>` : ''}<td><b>${esc(e.name)}</b></td><td>${esc(e.code||'')}</td><td>${clsCode(e.class_id) ? `<span class="code" title="${esc((clsById(e.class_id) || {}).description || '')}">${esc(clsCode(e.class_id))}</span>` : '<span class="note">—</span>'}</td><td>${isSub(e) ? `<span class="badge sub">sub</span> ${esc(e.company || 'no company')}` : e.pay_type}</td><td>${esc((siteById(e.site_id)||{}).name || '—')}</td><td>${esc((schedById(e.schedule_id)||{}).name || '—')}</td><td>${e.enrolled ? '<span class="badge ok">enrolled</span>' + (isAdmin() ? ` <button class="btn sm ghost" data-unface="${e.id}">Remove</button>` : '') : '<span class="badge">not yet</span>'}</td><td style="white-space:nowrap"><button class="btn sm ghost" data-assign="${e.id}">Assign</button> ${isAdmin() ? `<button class="btn sm ghost" data-edit="${e.id}">Edit</button>` : ''}</td></tr>`).join('') || '<tr><td class="note">No one matches.</td></tr>';
+  $('empTable').innerHTML = `<tr>${adm ? `<th><input type="checkbox" id="eChkAll" ${allOn ? 'checked' : ''} title="Select everyone shown"></th>` : ''}<th>Employee</th><th>#</th><th>Class</th><th>Pay</th><th>Site</th><th>Schedule</th><th>Face</th><th></th></tr>` + list.map(e => `<tr>${adm ? `<td><input type="checkbox" data-chk="${e.id}" ${EMP_SEL.has(e.id) ? 'checked' : ''}></td>` : ''}<td><b>${esc(e.name)}</b>${e.is_management ? ' <span class="badge" title="Counted as management on the daily headcount">MGMT</span>' : ''}</td><td>${esc(e.code||'')}</td><td>${clsCode(e.class_id) ? `<span class="code" title="${esc((clsById(e.class_id) || {}).description || '')}">${esc(clsCode(e.class_id))}</span>` : '<span class="note">—</span>'}</td><td>${isSub(e) ? `<span class="badge sub">sub</span> ${esc(e.company || 'no company')}` : e.pay_type}</td><td>${esc((siteById(e.site_id)||{}).name || '—')}</td><td>${esc((schedById(e.schedule_id)||{}).name || '—')}</td><td>${e.enrolled ? '<span class="badge ok">enrolled</span>' + (isAdmin() ? ` <button class="btn sm ghost" data-unface="${e.id}">Remove</button>` : '') : '<span class="badge">not yet</span>'}</td><td style="white-space:nowrap"><button class="btn sm ghost" data-assign="${e.id}">Assign</button> ${isAdmin() ? `<button class="btn sm ghost" data-edit="${e.id}">Edit</button>` : ''}</td></tr>`).join('') || '<tr><td class="note">No one matches.</td></tr>';
   $('empTable').querySelectorAll('[data-assign]').forEach(b => b.onclick = () => assignEmp(employeesAll.find(e => e.id === b.dataset.assign)));
   $('empTable').querySelectorAll('[data-edit]').forEach(b => b.onclick = () => editEmp(employeesAll.find(e => e.id === b.dataset.edit)));
   $('empTable').querySelectorAll('[data-unface]').forEach(b => b.onclick = () => removeFace(employeesAll.find(e => e.id === b.dataset.unface)));
@@ -937,8 +943,9 @@ async function assignEmp(e){
 async function editEmp(e){
   // read the phone fresh (the employee list may not carry it); a failed read just shows it blank and leaves it unchanged
   let phoneKnown = false; try { const r = await sb.from('employees').select('phone').eq('id', e.id).maybeSingle(); if (!r.error && r.data){ e = Object.assign({}, e, { phone: r.data.phone }); phoneKnown = true; } } catch (_) {}
-  const done = modal('Edit employee', `<div class="row"><label class="f">Name<input type="text" data-name value="${esc(e.name)}"></label><label class="f">Employee #<input type="text" data-code value="${esc(e.code||'')}"></label><label class="f">Phone<input type="tel" data-phone value="${esc(e.phone||'')}"></label></div><div class="note" style="margin:-4px 0 8px">Phone is updated from the Smartsheet Employee number sheet when it has one for this Employee #; type it here for subs.</div><div class="row"><label class="f">Pay type<select data-pay><option value="hourly" ${e.pay_type==='hourly'?'selected':''}>Hourly</option><option value="salary" ${e.pay_type==='salary'?'selected':''}>Salary</option><option value="sub" ${e.pay_type==='sub'?'selected':''}>Sub (subcontractor)</option></select></label><label class="f" data-cowrap>Company (sub)<input type="text" data-co list="coList" value="${esc(e.company||'')}"></label><label class="f">Status<select data-active><option value="true" ${e.active?'selected':''}>Active</option><option value="false" ${!e.active?'selected':''}>Inactive (face data deleted)</option></select></label></div><div class="row"><label class="f">Class<select data-class>${clsOpts(e.class_id)}</select></label></div>` + noteField(), async m => {
+  const done = modal('Edit employee', `<div class="row"><label class="f">Name<input type="text" data-name value="${esc(e.name)}"></label><label class="f">Employee #<input type="text" data-code value="${esc(e.code||'')}"></label><label class="f">Phone<input type="tel" data-phone value="${esc(e.phone||'')}"></label></div><div class="note" style="margin:-4px 0 8px">Phone is updated from the Smartsheet Employee number sheet when it has one for this Employee #; type it here for subs.</div><div class="row"><label class="f">Pay type<select data-pay><option value="hourly" ${e.pay_type==='hourly'?'selected':''}>Hourly</option><option value="salary" ${e.pay_type==='salary'?'selected':''}>Salary</option><option value="sub" ${e.pay_type==='sub'?'selected':''}>Sub (subcontractor)</option></select></label><label class="f" data-cowrap>Company (sub)<input type="text" data-co list="coList" value="${esc(e.company||'')}"></label><label class="f">Status<select data-active><option value="true" ${e.active?'selected':''}>Active</option><option value="false" ${!e.active?'selected':''}>Inactive (face data deleted)</option></select></label></div><div class="row"><label class="f">Class<select data-class>${clsOpts(e.class_id)}</select></label><label class="f" style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" data-mgmt ${e.is_management ? 'checked' : ''} style="width:auto"> Management (counted as management on the daily headcount)</label></div>` + noteField(), async m => {
     const note = needNote(m); const upd = { name: m.querySelector('[data-name]').value.trim(), code: m.querySelector('[data-code]').value.trim() || null, pay_type: m.querySelector('[data-pay]').value, active: m.querySelector('[data-active]').value === 'true', class_id: m.querySelector('[data-class]').value || null };
+    if (e.is_management !== undefined) upd.is_management = m.querySelector('[data-mgmt]').checked;
     upd.company = needCo(upd.pay_type, m.querySelector('[data-co]').value.trim());
     const ph = m.querySelector('[data-phone]').value.trim() || null; if (phoneKnown || ph) upd.phone = ph;
     if (!upd.active) upd.face_descs = null; const { error } = await sb.from('employees').update(upd).eq('id', e.id); if (error) throw new Error(error.message);
@@ -959,10 +966,20 @@ $('eAdd').onclick = async () => {
 function renderSites(){
   $('sitesList').innerHTML = mySites().map(s => `<div class="card"><h2>${esc(s.name)} <span class="note">${s.timezone}</span></h2>
     <div class="row"><label class="f">Lockout after punch-out (min)<input type="number" data-k="lockout_min" data-s="${s.id}" value="${s.lockout_min}"></label><label class="f">Grace after scheduled end (min)<input type="number" data-k="grace_min" data-s="${s.id}" value="${s.grace_min}"></label><label class="f">Flag lunches over (min)<input type="number" data-k="lunch_flag_min" data-s="${s.id}" value="${s.lunch_flag_min}"></label><label class="f">Deduct if no lunch punched (min)<input type="number" data-k="auto_deduct_min" data-s="${s.id}" value="${s.auto_deduct_min}"></label>${isAdmin() ? `<label class="f">Time zone<select data-k="timezone" data-s="${s.id}">${['America/New_York','America/Chicago','America/Denver','America/Phoenix','America/Los_Angeles'].map(z => `<option ${z===s.timezone?'selected':''}>${z}</option>`).join('')}</select></label>` : ''}<button class="btn" data-savesite="${s.id}">Save</button></div>
+    <h3 style="margin-top:14px">Customer daily form (Headcount tab)</h3>
+    <div class="row"><label class="f" style="flex:2 1 320px">Form link<input type="text" data-f="hc_form_url" data-fs="${s.id}" value="${esc(s.hc_form_url || '')}" placeholder="https://app.smartsheet.com/b/form/…"></label><label class="f">Site (exactly as on the form)<input type="text" data-f="hc_form_site" data-fs="${s.id}" value="${esc(s.hc_form_site || '')}" placeholder="BEAZ 2A"></label><label class="f">Company<input type="text" data-f="hc_form_company" data-fs="${s.id}" value="${esc(s.hc_form_company || '')}" placeholder="AIME"></label><label class="f">Scope (blank = pick on form)<input type="text" data-f="hc_form_scope" data-fs="${s.id}" value="${esc(s.hc_form_scope || '')}"></label></div>
+    <div class="row"><label class="f" style="flex:2 1 320px">Tag sheets (Smartsheet sheet IDs, comma separated — open tags + archive)<input type="text" data-f="hc_tag_sheets" data-fs="${s.id}" value="${esc(s.hc_tag_sheets || '')}" placeholder="2731278116802436, 3343843532427140"></label><button class="btn" data-saveform="${s.id}">Save form settings</button></div>
+    <div class="note">Site, Company and Scope must match the form's dropdown text exactly or the form leaves them blank. The sheet ID is under File → Properties in Smartsheet.</div>
     <h3 style="margin-top:14px">Schedules</h3><div class="tableWrap"><table><tr><th>Name</th><th>Start</th><th>End</th><th>Grace</th><th>Guaranteed hrs</th><th></th></tr>${schedules.filter(x => x.site_id === s.id).map(x => `<tr><td>${esc(x.name)}</td><td>${String(x.start_time).slice(0,5)}</td><td>${String(x.end_time).slice(0,5)}${Rules.crossesMidnight(x) ? ' <span class="badge" title="ends the next day">night</span>' : ''}</td><td>${x.grace_min ?? 'site default'}</td><td>${x.min_paid_hours ? x.min_paid_hours : '—'}</td><td><button class="btn sm ghost" data-editsched="${x.id}">Edit</button> <button class="btn sm ghost" data-delsched="${x.id}">Delete</button></td></tr>`).join('')}</table></div>
     <div class="row" style="margin-top:8px"><label class="f">New schedule name<input type="text" data-scn="${s.id}" placeholder="e.g. Night 6pm–4:30am"></label><label class="f">Start<input type="time" data-scs="${s.id}" value="07:00"></label><label class="f">End<input type="time" data-sce="${s.id}" value="15:30"></label><button class="btn ghost" data-addsched="${s.id}">Add schedule</button></div></div>`).join('');
   $('sitesList').querySelectorAll('[data-savesite]').forEach(b => b.onclick = async () => { const id = b.dataset.savesite; const upd = {}; $('sitesList').querySelectorAll(`[data-s="${id}"]`).forEach(i => upd[i.dataset.k] = i.dataset.k === 'timezone' ? i.value : +i.value); const before = siteById(id);
     const { error } = await sb.from('sites').update(upd).eq('id', id); if (error){ toast(error.message); return; } await audit('site_settings', id, before, upd, 'site settings saved'); toast('Saved'); await loadRefs(); renderSites(); });
+  $('sitesList').querySelectorAll('[data-saveform]').forEach(b => b.onclick = async () => { const id = b.dataset.saveform, upd = {};
+    $('sitesList').querySelectorAll(`[data-fs="${id}"]`).forEach(i => upd[i.dataset.f] = i.value.trim() || null);
+    if (upd.hc_tag_sheets && !/^\d+(\s*,\s*\d+)*$/.test(upd.hc_tag_sheets)){ toast('Tag sheets must be sheet ID numbers separated by commas.'); return; }
+    const before = siteById(id); const { error } = await sb.from('sites').update(upd).eq('id', id);
+    if (error){ toast(/column/.test(error.message) ? 'Run schema_patch_hcform.sql in Supabase first — ' + error.message : error.message, 7000); return; }
+    await audit('site_form_settings', id, before, upd, 'customer form settings saved'); toast('Saved'); await loadRefs(); renderSites(); });
   $('sitesList').querySelectorAll('[data-addsched]').forEach(b => b.onclick = async () => { const id = b.dataset.addsched; const name = $('sitesList').querySelector(`[data-scn="${id}"]`).value.trim(); if (!name){ toast('Schedule needs a name'); return; }
     const row = { site_id: id, name, start_time: $('sitesList').querySelector(`[data-scs="${id}"]`).value, end_time: $('sitesList').querySelector(`[data-sce="${id}"]`).value }; const { error } = await sb.from('schedules').insert(row); if (error){ toast(error.message); return; } await audit('schedule_added', id, null, row, ''); await loadRefs(); renderSites(); });
   $('sitesList').querySelectorAll('[data-editsched]').forEach(b => b.onclick = async () => { const x = schedById(b.dataset.editsched);
@@ -1075,13 +1092,14 @@ async function loadHeadcount(){
   const tz = site.timezone, now = new Date();
   $('hcLoad').disabled = true;
   try {
-    const { data: punches, error } = await sb.from('punches').select('employee_id,type,ts,device_id').eq('site_id', site.id).gte('ts', new Date(now.getTime() - 20*3600e3).toISOString()).order('ts');
+    // "today" needs punches back to last evening (a night shift that punched in yesterday and out this morning counts today)
+    const today = Rules.dayKey(now, tz), since = new Date(Math.min(now.getTime() - 20*3600e3, Rules.zoned(today, '00:00', tz).getTime() - 8*3600e3));
+    const { data: allPunches, error } = await sb.from('punches').select('employee_id,type,ts,device_id').eq('site_id', site.id).gte('ts', since.toISOString()).order('ts');
     if (error) throw new Error(error.message);
-    const ids = [...new Set(punches.map(p => p.employee_id))];
-    let emps = [];
-    for (let i = 0; i < ids.length; i += 150){ const r = await sb.from('employees').select('id,code,name,pay_type,company,class_id,schedule_id,phone').in('id', ids.slice(i, i + 150)); if (r.error) throw new Error(r.error.message); emps = emps.concat(r.data || []); }
+    const cut = now.getTime() - 20*3600e3, punches = allPunches.filter(p => new Date(p.ts).getTime() >= cut);
+    const emps = await hcPeople(site.id, since, [...new Set(allPunches.map(p => p.employee_id))]);
     const on = [], gone = [];
-    emps.forEach(e => {
+    emps.filter(e => punches.some(p => p.employee_id === e.id)).forEach(e => {
       const sal = e.pay_type === 'salary', ps = punches.filter(p => p.employee_id === e.id), last = ps[ps.length - 1], sched = sal ? hcLatestSched(site.id) : schedById(e.schedule_id);
       const wd = Rules.workDate(last.ts, sched, tz), shift = ps.filter(p => Rules.workDate(p.ts, sched, tz) === wd);
       const firstIn = shift.find(p => p.type === 'in') || [...ps].reverse().find(p => p.type === 'in' && new Date(last.ts) - new Date(p.ts) < 14*3600e3), win = Rules.schedWindow(wd, sched, tz);
@@ -1100,12 +1118,71 @@ async function loadHeadcount(){
     const sorter = (a, b) => grp(a).localeCompare(grp(b)) || a.e.name.localeCompare(b.e.name);
     on.sort(sorter); gone.sort(sorter);
     const dev = new Map(); punches.forEach(p => { if (p.device_id) dev.set(p.device_id, p.ts); });
-    HC = { site, at: now, on, gone, dev };
+    HC = { site, at: now, on, gone, dev, today: hcTodayCount(allPunches, emps, site, today), tags: null };
     $('hcTo').value = lsGet('hcTo:' + site.id);
     renderHeadcount();
+    hcCheckTags(HC);
   } catch (e) { toast(e.message, 7000); }
   finally { $('hcLoad').disabled = false; }
 }
+// people who punched at this site. Uses hc_people (schema_patch_hcform.sql) so a supervisor also sees someone assigned to another site who punched here.
+async function hcPeople(siteId, since, ids){
+  if (!ids.length) return [];
+  const r = await sb.rpc('hc_people', { p_site: siteId, p_since: since.toISOString() });
+  if (!r.error) return (r.data || []).filter(e => ids.includes(e.id));
+  if (!hcPeople.warned){ hcPeople.warned = true; toast('Run schema_patch_hcform.sql in Supabase for the Today counts — ' + r.error.message, 8000); }
+  let emps = [];
+  for (let i = 0; i < ids.length; i += 150){ const q = await sb.from('employees').select('id,code,name,pay_type,company,class_id,schedule_id,phone').in('id', ids.slice(i, i + 150)); if (q.error) throw new Error(q.error.message); emps = emps.concat(q.data || []); }
+  return emps;
+}
+// the day a punch counts toward for the daily headcount: its work date, except a night shift counts on the day it ends (punch-out day)
+function hcDayOf(ts, sched, tz){ const wd = Rules.workDate(ts, sched, tz); return sched && Rules.crossesMidnight(sched) ? Rules.addDays(wd, 1) : wd; }
+function hcTodayCount(allPunches, emps, site, today){
+  const tz = site.timezone, mgmt = [], labor = [];
+  emps.forEach(e => {
+    const sched = e.pay_type === 'salary' ? hcLatestSched(site.id) : schedById(e.schedule_id);
+    if (allPunches.some(p => p.employee_id === e.id && hcDayOf(p.ts, sched, tz) === today)) (e.is_management ? mgmt : labor).push(e);
+  });
+  return { date: today, mgmt, labor };
+}
+// New missing material / New RFI from the site's tag sheets (Supabase function tag-check, which holds the Smartsheet token)
+async function hcCheckTags(h){
+  const sheets = String(h.site.hc_tag_sheets || '').trim();
+  if (!sheets){ h.tags = { off: true }; hcRenderToday(); return; }
+  h.tags = { loading: true }; hcRenderToday();
+  try {
+    const { data, error } = await sb.functions.invoke('tag-check', { body: { site_id: h.site.id, date: h.today.date } });
+    if (error){ let msg = error.message; try { const c = error.context; if (c && c.status === 404) msg = 'the tag-check function is not deployed yet'; else if (c && c.json) { const j = await c.json(); if (j && j.error) msg = j.error; } } catch (_) {} throw new Error(msg); }
+    if (!data || data.error) throw new Error((data && data.error) || 'no answer');
+    h.tags = data;
+  } catch (e) { h.tags = { failed: e.message || String(e) }; }
+  if (HC === h) hcRenderToday();
+}
+const HCF = { date: 'Date', site: 'Site', company: 'Company', name: 'Name', scope: 'Scope', mgmt: 'Management headcount?', labor: 'Labor headcount?', mm: 'New missing material identified?', rfi: 'Do you have a new Request for Information (RFI)?' };
+function hcFormUrl(){
+  const { site, today, tags } = HC, base = String(site.hc_form_url || '').trim(); if (!base) return '';
+  const q = [[HCF.date, today.date], [HCF.site, site.hc_form_site], [HCF.company, site.hc_form_company], [HCF.name, me.display_name], [HCF.scope, site.hc_form_scope], [HCF.mgmt, today.mgmt.length], [HCF.labor, today.labor.length]];
+  if (tags && tags.ok){ q.push([HCF.mm, tags.missing_material ? 'Yes' : 'No'], [HCF.rfi, tags.rfi ? 'Yes' : 'No']); }
+  const qs = q.filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== '').map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(String(v).trim())).join('&');
+  return base + (base.includes('?') ? '&' : '?') + qs;
+}
+function hcRenderToday(){
+  if (!HC) return; const { site, today, tags } = HC, tz = site.timezone;
+  const yn = (v, n) => `<b>${v ? 'Yes' : 'No'}</b><span>${n}</span>`;
+  let tagBoxes = '';
+  if (tags && tags.ok) tagBoxes = `<div>${yn(tags.missing_material, 'new missing material' + (tags.missing_material ? ' (' + tags.counts.missing_material + ')' : ''))}</div><div>${yn(tags.rfi, 'new RFI' + (tags.rfi ? ' (' + tags.counts.rfi + ')' : ''))}</div>`;
+  else if (tags && tags.loading) tagBoxes = `<div><b>…</b><span>checking tag sheets</span></div>`;
+  $('hcTodayTitle').textContent = `Today — ${new Date(Rules.zoned(today.date, '12:00', tz)).toLocaleDateString('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric' })}`;
+  $('hcTodayKpi').innerHTML = `<div><b>${today.mgmt.length + today.labor.length}</b><span>on site today</span></div><div><b>${today.mgmt.length}</b><span>management${today.mgmt.length ? ': ' + esc(today.mgmt.map(e => e.name.split(' ')[0]).join(', ')) : ''}</span></div><div><b>${today.labor.length}</b><span>labor</span></div>` + tagBoxes;
+  const url = hcFormUrl(), msgs = [];
+  if (!url) msgs.push('Set the customer form link for this site on the Sites tab.');
+  if (tags && tags.failed) msgs.push('Tag check failed (' + tags.failed + ') — the two tag questions are left blank; answer them on the form.');
+  if (tags && tags.off && url) msgs.push('No tag sheets set for this site — answer missing material and RFI on the form.');
+  if (tags && tags.loading) msgs.push('Checking tags… the button works now, but wait a moment if you want those two answers filled in.');
+  $('hcFormMsg').textContent = msgs.join(' ');
+  $('hcForm').disabled = !url;
+}
+$('hcForm').onclick = () => { const url = hcFormUrl(); if (url) window.open(url, '_blank', 'noopener'); };
 function hcWhen(d, tz){ return new Date(d).toLocaleString('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); }
 function hcGroups(list){
   const g = new Map(); list.forEach(x => { const k = isSub(x.e) ? (x.e.company || '(no company)') + ' (sub)' : 'AIME'; if (!g.has(k)) g.set(k, []); g.get(k).push(x); });
@@ -1122,6 +1199,7 @@ function renderHeadcount(){
   $('hcGoneCard').classList.toggle('hidden', !gone.length); $('hcGone').innerHTML = gone.length ? table(gone) : '';
   $('hcDev').innerHTML = dev.size ? [...dev.entries()].sort().map(([d, ts]) => `<div><b>${esc(d)}</b> — last punch ${hcWhen(ts, tz)}</div>`).join('') + '<div style="margin-top:4px">A tablet that has been quiet for a long time during a shift may be offline; its punches arrive when it reconnects.</div>' : 'No punches from any tablet at this site in the last 20 hours.';
   $('hcBody').classList.remove('hidden'); $('hcCopy').disabled = false; $('hcMail').disabled = false;
+  hcRenderToday();
 }
 function hcText(){
   const { site, at, on, gone } = HC, tz = site.timezone, lunch = on.filter(x => x.status === 'lunch').length;
