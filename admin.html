@@ -223,8 +223,8 @@
   <div id="v-users" class="view hidden">
     <div class="card"><h2>Add user</h2>
       <div class="row"><label class="f">Display name<input type="text" id="uName"></label><label class="f">Email (login)<input type="email" id="uEmail"></label><label class="f">Password<input type="text" id="uPass" placeholder="8+ characters"></label></div>
-      <div class="row"><label class="f">Role<select id="uRole"><option value="supervisor">Supervisor</option><option value="admin">Admin</option><option value="device">Tablet (kiosk device)</option></select></label><label class="f">Sites<select id="uSites" multiple size="3"></select></label><label class="f">Kiosk PIN (supervisors/admins)<input type="text" id="uPin" inputmode="numeric" placeholder="4–6 digits"></label><button class="btn" id="uAdd">Create</button></div>
-      <div class="note">Tablets: use an email like <b>palestine-tab1@aime.local</b> and one site. The PIN is what supervisors type at the kiosk; the password is for this page.</div><div class="note" id="uMsg"></div></div>
+      <div class="row"><label class="f">Role<select id="uRole"><option value="supervisor">Supervisor</option><option value="admin">Admin</option><option value="device">Tablet (kiosk device)</option><option value="foreman">Sub foreman (one sub company)</option></select></label><label class="f hidden" id="uCoWrap">Sub company<input type="text" id="uCo" list="uCoList" placeholder="as on the employees"></label><datalist id="uCoList"></datalist><label class="f">Sites<select id="uSites" multiple size="3"></select></label><label class="f">Kiosk PIN (supervisors/admins)<input type="text" id="uPin" inputmode="numeric" placeholder="4–6 digits"></label><button class="btn" id="uAdd">Create</button></div>
+      <div class="note">Tablets: use an email like <b>palestine-tab1@aime.local</b> and one site. The PIN is what supervisors type at the kiosk; the password is for this page. A <b>sub foreman</b> needs no sites or PIN — he signs in here and sees only his company's subs, at whatever site they're on.</div><div class="note" id="uMsg"></div></div>
     <div class="card"><h2>People and tablets</h2><div class="tableWrap"><table id="userTable"></table></div></div>
   </div>
 </main>
@@ -423,7 +423,9 @@ const lsSet = (k, v) => { try { localStorage.setItem('tc:' + k, v); } catch (e) 
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let me = null, sites = [], schedules = [], employeesAll = [], classes = [];
 const isAdmin = () => me && me.role === 'admin';
-const mySites = () => isAdmin() ? sites : sites.filter(s => (me.site_ids||[]).includes(s.id));
+// sub foreman: one company, sees only that company's subs (the database enforces it — schema_patch_foreman.sql)
+const isForeman = () => me && me.role === 'foreman';
+const mySites = () => (isAdmin() || isForeman()) ? sites : sites.filter(s => (me.site_ids||[]).includes(s.id));
 const siteById = id => sites.find(s => s.id === id);
 const schedById = id => schedules.find(s => s.id === id);
 // ---- job classification codes (ELEC, MECH, ELAP…) ----
@@ -469,8 +471,9 @@ async function boot(){
   if (!prof || !prof.active || prof.role === 'device'){
     const why = perr ? 'profile lookup failed: ' + perr.message : !prof ? 'no profile found for user ' + session.user.id + ' (' + (session.user.email||'') + ')' : !prof.active ? 'profile is disabled' : 'this is a tablet login, not a person';
     $('lMsg').textContent = 'This login has no access to the review page — ' + why + '.'; await sb.auth.signOut(); $('v-login').classList.remove('hidden'); return; }
-  me = prof; $('v-login').classList.add('hidden'); $('nav').classList.remove('hidden'); $('btnOut').classList.remove('hidden'); $('btnPw').classList.remove('hidden'); $('whoami').textContent = me.display_name + ' · ' + me.role;
+  me = prof; $('v-login').classList.add('hidden'); $('nav').classList.remove('hidden'); $('btnOut').classList.remove('hidden'); $('btnPw').classList.remove('hidden'); $('whoami').textContent = me.display_name + ' · ' + (isForeman() ? 'foreman · ' + (me.company || '?') : me.role);
   $('navUsers').classList.toggle('hidden', !isAdmin()); $('siteAddCard').classList.toggle('hidden', !isAdmin()); $('empAddCard').classList.toggle('hidden', !isAdmin()); $('clsCard').classList.toggle('hidden', !isAdmin());
+  if (isForeman()){ document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('hidden', b.dataset.v !== 'review')); arQuick('12m'); await loadRefs(); if (!sites.length) toast('No ' + (me.company || '') + ' crew is assigned to a site yet.', 6000); showView('review'); return; }
   arQuick('12m');
   await loadRefs(); await checkBillingAccess(); showView('review');
 }
@@ -544,7 +547,7 @@ async function computeWeekFor(site, dateVal){
     sb.from('employees').select(EMP_COLS).eq('site_id', site.id),
     fetchAll(() => sb.from('punches').select('*').eq('site_id', site.id).gte('ts', from).lt('ts', to).order('ts').order('id')),
     fetchAll(() => sb.from('day_adjustments').select('*').gte('work_date', ws).lte('work_date', days[6]).order('employee_id').order('work_date')),
-    sb.from('week_closes').select('*').eq('site_id', site.id).eq('week_start', ws).order('closed_at', { ascending: false }) ]);
+    isForeman() ? sb.rpc('crew_week_close', { p_site: site.id, p_ws: ws }) : sb.from('week_closes').select('*').eq('site_id', site.id).eq('week_start', ws).order('closed_at', { ascending: false }) ]);
   const err1 = error || eErr || cErr; if (err1) throw new Error(/company/.test(err1.message) ? 'Run schema_patch6.sql in Supabase first — ' + err1.message : /class_id|week_closes/.test(err1.message) ? 'Run schema_patch5.sql in Supabase first — ' + err1.message : err1.message);
   // include people who punched here but are now assigned elsewhere
   const ids = new Set(emps.map(e => e.id)); const extra = [...new Set(punches.map(p => p.employee_id))].filter(id => !ids.has(id));
@@ -791,7 +794,7 @@ const weekFileName = (site, ws) => `${site.name.replace(/\W+/g,'_')}_Week_${ws}.
 function saveBlob(blob, name){ const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000); }
 $('rvExport').onclick = async () => {
   const buf = await buildWorkbook(RV).xlsx.writeBuffer();
-  saveBlob(new Blob([buf], { type: XLSX_TYPE }), weekFileName(RV.site, RV.ws));
+  saveBlob(new Blob([buf], { type: XLSX_TYPE }), isForeman() ? weekFileName(RV.site, RV.ws).replace('_Week_', '_' + String(me.company || 'Crew').replace(/\W+/g,'_') + '_Week_') : weekFileName(RV.site, RV.ws));
 };
 
 // ---- week close-out (admins) ----
@@ -813,6 +816,7 @@ async function downloadArchived(c){
 }
 function renderCloseBar(){
   const el = $('rvClose'), c = RV.close; el.className = 'banner';
+  if (isForeman()){ if (c){ el.classList.add('closed'); el.innerHTML = `<span class="badge closed">CLOSED</span><div class="grow"><b>Closed ${esc(fmtWhen(c.closed_at))} by ${esc(c.closed_by_name || '?')}</b><br><span class="note">This pay week is locked. Ask AIME to make any correction.</span></div>`; } else el.innerHTML = ''; return; }
   if (c){
     const live = weekSummary(RV).totals, snap = (c.summary || {}).totals || {};
     const drift = Math.abs((live.total || 0) - (snap.total || 0)) > 0.009 || (live.employees || 0) !== (snap.employees || 0);
@@ -1428,12 +1432,13 @@ function renderAudit(){
 
 // ========== USERS (admin) ==========
 async function renderUsers(){
+  sb.rpc('employee_companies').then(({ data }) => { $('uCoList').innerHTML = [...new Set((data || []).map(x => x.company).filter(Boolean).map(c => c.trim()))].sort().map(c => `<option value="${esc(c)}">`).join(''); });
   const { data, error } = await sb.from('profiles').select('*').order('role').order('display_name'); if (error){ toast(error.message); return; }
-  $('userTable').innerHTML = `<tr><th>Name</th><th>Role</th><th>Sites</th><th>Kiosk PIN</th><th>Status</th><th></th></tr>` + data.map(u => `<tr><td><b>${esc(u.display_name)}</b>${u.device_id ? '<br><span class="note">' + esc(u.device_id) + '</span>' : ''}</td><td>${u.role}</td><td>${(u.site_ids||[]).map(id => esc((siteById(id)||{}).name || '?')).join(', ') || (u.role === 'admin' ? 'all' : '—')}</td><td>${u.role === 'device' ? '' : (u.pin_hash ? '<span class="badge ok">set</span>' : '<span class="badge">none</span>')}</td><td>${u.active ? 'active' : 'disabled'}</td><td style="white-space:nowrap"><button class="btn sm ghost" data-ue="${u.user_id}">Edit</button> <button class="btn sm ghost" data-us="${u.user_id}">Sites</button> <button class="btn sm ghost" data-upw="${u.user_id}">Password</button> ${u.role !== 'device' ? `<button class="btn sm ghost" data-up="${u.user_id}">PIN</button>` : ''} <button class="btn sm ghost" data-ut="${u.user_id}">${u.active ? 'Disable' : 'Enable'}</button> ${u.user_id !== me.user_id ? `<button class="btn sm ghost" data-ud="${u.user_id}" style="color:var(--miss)">Delete</button>` : ''}</td></tr>`).join('');
+  $('userTable').innerHTML = `<tr><th>Name</th><th>Role</th><th>Sites</th><th>Kiosk PIN</th><th>Status</th><th></th></tr>` + data.map(u => `<tr><td><b>${esc(u.display_name)}</b>${u.device_id ? '<br><span class="note">' + esc(u.device_id) + '</span>' : ''}</td><td>${u.role}</td><td>${u.role === 'foreman' ? 'only ' + esc(u.company || '?') + ' subs, any site' : (u.site_ids||[]).map(id => esc((siteById(id)||{}).name || '?')).join(', ') || (u.role === 'admin' ? 'all' : '—')}</td><td>${u.role === 'device' || u.role === 'foreman' ? '' : (u.pin_hash ? '<span class="badge ok">set</span>' : '<span class="badge">none</span>')}</td><td>${u.active ? 'active' : 'disabled'}</td><td style="white-space:nowrap"><button class="btn sm ghost" data-ue="${u.user_id}">Edit</button> ${u.role === 'foreman' ? '' : `<button class="btn sm ghost" data-us="${u.user_id}">Sites</button>`} <button class="btn sm ghost" data-upw="${u.user_id}">Password</button> ${u.role !== 'device' && u.role !== 'foreman' ? `<button class="btn sm ghost" data-up="${u.user_id}">PIN</button>` : ''} <button class="btn sm ghost" data-ut="${u.user_id}">${u.active ? 'Disable' : 'Enable'}</button> ${u.user_id !== me.user_id ? `<button class="btn sm ghost" data-ud="${u.user_id}" style="color:var(--miss)">Delete</button>` : ''}</td></tr>`).join('');
   $('userTable').querySelectorAll('[data-ue]').forEach(b => b.onclick = async () => { const u = data.find(x => x.user_id === b.dataset.ue);
-    await modal('Edit ' + u.display_name, `<div class="row"><label class="f">Display name<input type="text" data-n value="${esc(u.display_name)}"></label><label class="f">Role<select data-r><option value="supervisor" ${u.role==='supervisor'?'selected':''}>Supervisor</option><option value="admin" ${u.role==='admin'?'selected':''}>Admin</option><option value="device" ${u.role==='device'?'selected':''}>Tablet</option></select></label></div><div class="note">To change someone's password, use the Password button in their row.</div>`, async m => {
-      const upd = { display_name: m.querySelector('[data-n]').value.trim(), role: m.querySelector('[data-r]').value }; if (!upd.display_name) throw new Error('Name is required.'); if (u.user_id === me.user_id && upd.role !== 'admin') throw new Error("You can't remove your own admin role.");
-      const { error } = await sb.from('profiles').update(upd).eq('user_id', u.user_id); if (error) throw new Error(error.message); await audit('user_edited', u.user_id, {display_name: u.display_name, role: u.role}, upd, ''); renderUsers(); }); });
+    await modal('Edit ' + u.display_name, `<div class="row"><label class="f">Display name<input type="text" data-n value="${esc(u.display_name)}"></label><label class="f">Role<select data-r><option value="supervisor" ${u.role==='supervisor'?'selected':''}>Supervisor</option><option value="admin" ${u.role==='admin'?'selected':''}>Admin</option><option value="device" ${u.role==='device'?'selected':''}>Tablet</option><option value="foreman" ${u.role==='foreman'?'selected':''}>Sub foreman</option></select></label><label class="f">Sub company (foreman only)<input type="text" data-co list="uCoList" value="${esc(u.company || '')}"></label></div><div class="note">A sub foreman sees and edits only that company's subs, at any site — the company must match the Company on those employees. To change someone's password, use the Password button in their row.</div>`, async m => {
+      const upd = { display_name: m.querySelector('[data-n]').value.trim(), role: m.querySelector('[data-r]').value }; upd.company = upd.role === 'foreman' ? m.querySelector('[data-co]').value.trim() : null; if (upd.role === 'foreman' && !upd.company) throw new Error('Pick the sub company this foreman runs.'); if (!upd.display_name) throw new Error('Name is required.'); if (u.user_id === me.user_id && upd.role !== 'admin') throw new Error("You can't remove your own admin role.");
+      const { error } = await sb.from('profiles').update(upd).eq('user_id', u.user_id); if (error) throw new Error(error.message); await audit('user_edited', u.user_id, {display_name: u.display_name, role: u.role, company: u.company || null}, upd, ''); renderUsers(); }); });
   $('userTable').querySelectorAll('[data-ud]').forEach(b => b.onclick = async () => { const u = data.find(x => x.user_id === b.dataset.ud);
     if (!confirm(`Delete ${u.display_name}? They lose all access immediately. Their past edits stay in the audit log.`)) return;
     const { error } = await sb.from('profiles').delete().eq('user_id', u.user_id); if (error){ toast(error.message); return; } await audit('user_deleted', u.user_id, {display_name: u.display_name, role: u.role}, null, ''); toast(u.display_name + ' deleted. The login itself can be removed in Supabase → Authentication → Users.', 5000); renderUsers(); });
@@ -1449,20 +1454,22 @@ async function renderUsers(){
   $('userTable').querySelectorAll('[data-ut]').forEach(b => b.onclick = async () => { const u = data.find(x => x.user_id === b.dataset.ut); const { error } = await sb.from('profiles').update({ active: !u.active }).eq('user_id', u.user_id); if (error){ toast(error.message); return; } await audit(u.active ? 'user_disabled' : 'user_enabled', u.user_id, null, null, ''); renderUsers(); });
 }
 $('uAdd').onclick = async () => {
-  const name = $('uName').value.trim(), email = $('uEmail').value.trim(), pass = $('uPass').value, role = $('uRole').value, site_ids = [...$('uSites').selectedOptions].map(o => o.value), pin = $('uPin').value.trim();
+  const name = $('uName').value.trim(), email = $('uEmail').value.trim(), pass = $('uPass').value, role = $('uRole').value, site_ids = [...$('uSites').selectedOptions].map(o => o.value), pin = $('uPin').value.trim(), company = $('uCo').value.trim();
+  if (role === 'foreman' && !company){ $('uMsg').textContent = 'Pick the sub company this foreman runs.'; return; }
   if (!name || !email || pass.length < 8){ $('uMsg').textContent = 'Name, email and an 8+ character password are required.'; return; }
-  if (role !== 'admin' && !site_ids.length){ $('uMsg').textContent = 'Pick at least one site.'; return; }
+  if (role !== 'admin' && role !== 'foreman' && !site_ids.length){ $('uMsg').textContent = 'Pick at least one site.'; return; }
   $('uMsg').textContent = 'Creating…';
   // second client so creating the account doesn't replace the admin's own session
   const tmp = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
   const { data, error } = await tmp.auth.signUp({ email, password: pass }); if (error){ $('uMsg').textContent = error.message; return; }
   if (!data.user){ $('uMsg').textContent = 'Account not returned — check that "Confirm email" is turned off in Supabase Authentication settings.'; return; }
-  const prof = { user_id: data.user.id, display_name: name, role, site_ids: role === 'admin' ? [] : site_ids, device_id: role === 'device' ? email.split('@')[0] : null };
+  const prof = { user_id: data.user.id, display_name: name, role, site_ids: (role === 'admin' || role === 'foreman') ? [] : site_ids, device_id: role === 'device' ? email.split('@')[0] : null }; if (role === 'foreman') prof.company = company;
   const { error: e2 } = await sb.from('profiles').insert(prof); if (e2){ $('uMsg').textContent = 'Login created but profile failed: ' + e2.message; return; }
-  if (pin && role !== 'device'){ const { error: e3 } = await sb.rpc('set_pin', { p_user: data.user.id, p_pin: pin }); if (e3){ $('uMsg').textContent = 'User created; PIN failed: ' + e3.message; } }
-  await audit('user_created', data.user.id, null, prof, ''); $('uMsg').textContent = name + ' created.'; ['uName','uEmail','uPass','uPin'].forEach(id => $(id).value = ''); renderUsers();
+  if (pin && role !== 'device' && role !== 'foreman'){ const { error: e3 } = await sb.rpc('set_pin', { p_user: data.user.id, p_pin: pin }); if (e3){ $('uMsg').textContent = 'User created; PIN failed: ' + e3.message; } }
+  await audit('user_created', data.user.id, null, prof, ''); $('uMsg').textContent = name + ' created.'; ['uName','uEmail','uPass','uPin','uCo'].forEach(id => $(id).value = ''); renderUsers();
 };
 
+$('uRole').onchange = () => $('uCoWrap').classList.toggle('hidden', $('uRole').value !== 'foreman');
 boot();
 </script>
 </body>
