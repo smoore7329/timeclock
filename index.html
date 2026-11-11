@@ -79,6 +79,10 @@
   .act.ghost{border-color:rgba(255,255,255,.35);color:#e3edf8} .foot{color:#c9d9ec}
   .sync{display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--in);margin-right:6px;vertical-align:middle}
   .sync.off{background:var(--warn)} .sync.err{background:var(--miss)}
+  #turnArrow{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;pointer-events:none;z-index:2}
+  #turnArrow .arr{font-size:min(30vh,200px);line-height:1;font-weight:900;color:#f2b632;text-shadow:0 4px 18px rgba(0,0,0,.8)}
+  #turnArrow .txt{font-size:26px;font-weight:800;line-height:1.3;text-align:center;background:rgba(0,0,0,.6);padding:10px 18px;border-radius:12px}
+  #turnArrow .txt small{display:block;font-size:20px;font-weight:600;color:#d7e3ee}
   #connect .body{max-width:480px;margin:0 auto;width:100%;justify-content:center}
 </style>
 </head>
@@ -102,6 +106,7 @@
   <div class="camWrap"><div class="cam">
     <video id="video" autoplay muted playsinline></video>
     <canvas id="overlay"></canvas>
+    <div id="turnArrow" class="hidden"><div class="arr" id="taArr"></div><div class="txt" id="taTxt"></div></div>
     <div class="site"><span id="siteName">Time Clock</span><span id="clock">--:--</span></div>
     <div class="status" id="status">Step up to the camera</div>
   </div></div>
@@ -161,7 +166,7 @@
     <div id="t-device" class="tab hidden">
       <div class="card"><h3>This tablet</h3><div class="note" id="devInfo"></div></div>
       <div class="card"><h3>Sync</h3><div class="note" id="syncInfo"></div><button class="btn" id="btnSyncNow">Sync now</button></div>
-      <div class="card"><h3>Blink test</h3><div class="note">Stand in front of the camera and blink a few times: the count should go up once per blink. Then hold up a photo of a face and move it around: the count should stay put. Blink check for this site is <b id="btBlinkOn"></b> (change it on the review page, Sites).</div><div style="font-size:28px;font-weight:800" id="btOut">—</div><div class="note" id="btVals"></div><div class="note" id="btDips"></div><label class="f">Blink cutoff for this tablet: <b id="btCutV"></b> (higher = catches lighter blinks, but a photo gets closer to passing)<input type="range" id="btCut" min="50" max="92" step="1" style="width:100%"></label><button class="btn" id="btnBlinkTest">Start blink test</button></div>
+      <div class="card"><h3>Head-turn test</h3><div class="note">Stand in front of the camera and follow the arrow: turn your head that way, then look back at the screen. Each good turn counts and a new arrow appears. Then hold up a photo of a face and tilt and swing it every way: it should never count. Head-turn check for this site is <b id="btOn"></b> (change it on the review page, Sites).</div><div style="font-size:28px;font-weight:800" id="btOut">—</div><div class="note" id="btVals"></div><label class="f">Turn needed on this tablet: <b id="btCutV"></b> (lower = a smaller turn is enough; higher = harder to fake)<input type="range" id="btCut" min="10" max="50" step="1" style="width:100%"></label><button class="btn" id="btnTurnTest">Start head-turn test</button></div>
       <button class="btn danger" id="btnDisconnect">Disconnect tablet (admin only)</button>
     </div>
   </div>
@@ -221,7 +226,7 @@ let lastFrameAt = Date.now(), frameSeq = 0, procSeq = -1, lastDesc = null, sameD
 const bootAt = Date.now();
 const recentPunch = new Map();   // employee id -> time until which the face path ignores them (after a punch)
 const PUNCH_COOLDOWN_MS = 60000, STALL_MS = 4000;
-let currentDist = null, currentSnap = null, live = null;   // face match distance + snapshot for the person on screen; live = blink check in progress
+let currentDist = null, currentSnap = null, currentRetry = false, live = null;   // face match distance + snapshot for the person on screen; live = head-turn check in progress
 
 const empById = id => employees.find(e => e.id === id);
 const schedOf = e => schedules.find(s => s.id === e.schedule_id) || schedules[0] || {name:'—', start_time:'', end_time:''};
@@ -317,6 +322,7 @@ async function punch(type){
   if (!isSalary(current)){
     if (currentMethod === 'fallback') flags.push('manual pick - verify photo');
     if (currentMethod === 'face' && currentDist != null && currentDist > WEAK_MATCH) flags.push('weak face match - check photo');
+    if (currentMethod === 'face' && currentRetry) flags.push('turned the wrong way first - check photo');
     if (currentMethod === 'face' && spotCheck()) flags.push('random spot-check');
   }
   if (st.staleIn) flags.push('previous shift left open');
@@ -333,7 +339,7 @@ function showDone(emp, type, rec){
   setTimeout(resetKiosk, 2500);
 }
 function resetKiosk(){
-  live = null; currentDist = null; currentSnap = null;
+  live = null; currentDist = null; currentSnap = null; currentRetry = false; $('turnArrow').classList.add('hidden');
   current = null; currentMethod = 'face'; stable = {id:null,n:0}; recognizing = true; $('who').className = 'who';
   $('whoName').textContent = 'Waiting…'; $('whoSub').textContent = 'Look at the camera to punch';
   $('btnIn').classList.add('hidden'); $('btnOut').classList.add('hidden'); $('btnNotMe').classList.remove('hidden'); $('btnClear').classList.add('hidden'); $('status').textContent = 'Step up to the camera';
@@ -341,12 +347,12 @@ function resetKiosk(){
 function showEmployee(emp, method, pending){
   lastActivity = Date.now(); current = emp; currentMethod = method; const st = stateFor(emp); const w = $('who'); $('whoName').textContent = emp.name;
   if (pending){ w.className = 'who lock'; $('btnIn').classList.add('hidden'); $('btnOut').classList.add('hidden'); $('btnClear').classList.remove('hidden');
-    $('whoSub').innerHTML = '<b>Blink</b> to confirm it\'s you'; $('status').textContent = 'Look at the camera and blink';
-    clearTimeout(idleTimer); idleTimer = setTimeout(() => { if (current === emp && live){ audit('blink_timeout', emp.id, {dist: live.dist}); resetKiosk(); } }, BLINK_GIVEUP_MS); return; }
+    $('whoSub').innerHTML = 'Turn your head the way the <b>arrow</b> points, then look back'; $('status').textContent = 'Follow the arrow';
+    clearTimeout(idleTimer); idleTimer = setTimeout(() => { if (current === emp && live){ audit('turn_timeout', emp.id, {dist: live.dist, retries: live.retries}); resetKiosk(); } }, TURN_GIVEUP_MS); return; }
   $('btnIn').classList.toggle('hidden', st.next !== 'in'); $('btnOut').classList.toggle('hidden', st.next !== 'out'); $('btnClear').classList.remove('hidden');
   const tail = method === 'fallback' ? ' · manual pick, photo will be reviewed' : '';
   if (st.next === 'locked'){ w.className = 'who lock';
-    const tick = () => { if (current !== emp) return; const s = Math.max(0, Math.round((st.until - Date.now())/1000)); $('whoSub').innerHTML = `Punched out at ${fmtT(st.since.ts)}. You can punch back in at <b>${fmtT(st.until)}</b><br><span class="big">${Math.floor(s/60)}:${pad(s%60)}</span>`; if (s > 0) setTimeout(tick, 1000); else if (method === 'face' && blinkOn()) resetKiosk(); else showEmployee(emp, method); }; tick();
+    const tick = () => { if (current !== emp) return; const s = Math.max(0, Math.round((st.until - Date.now())/1000)); $('whoSub').innerHTML = `Punched out at ${fmtT(st.since.ts)}. You can punch back in at <b>${fmtT(st.until)}</b><br><span class="big">${Math.floor(s/60)}:${pad(s%60)}</span>`; if (s > 0) setTimeout(tick, 1000); else if (method === 'face' && checkOn()) resetKiosk(); else showEmployee(emp, method); }; tick();
   } else if (st.next === 'out'){ w.className = 'who out'; $('whoSub').textContent = 'Punched in at ' + fmtT(st.since.ts) + tail; }
   else if (isSalary(emp)){ w.className = 'who in'; $('whoSub').textContent = (st.since ? 'Last out ' + fmtT(st.since.ts) + ' · ' : '') + 'Salaried · punch in for the site headcount' + tail; }
   else { w.className = 'who in'; const sc = schedOf(emp); $('whoSub').textContent = (st.since ? 'Last out ' + fmtT(st.since.ts) + ' · ' : '') + 'Schedule ' + sc.name + ' ' + String(sc.start_time).slice(0,5) + '–' + String(sc.end_time).slice(0,5) + tail; }
@@ -356,51 +362,46 @@ function showEmployee(emp, method, pending){
 $('btnIn').onclick = () => punch('in'); $('btnOut').onclick = () => punch('out'); $('btnClear').onclick = () => { clearTimeout(idleTimer); resetKiosk(); };
 
 // ================= recognition loop =================
-// ================= blink check (a photo can't blink) =================
-const WEAK_MATCH = 0.45, BLINK_HINT_MS = 6000, BLINK_GIVEUP_MS = 15000;
-const blinkOn = () => !site || site.blink_check !== false;
-function eyeRatio(lm){ const p = lm.positions, d = (a, b) => Math.hypot(p[a].x - p[b].x, p[a].y - p[b].y);
-  const one = o => (d(o+1, o+5) + d(o+2, o+4)) / (2 * d(o, o+3)); return (one(36) + one(42)) / 2; }
+// ================= head-turn check (a photo or a recording can't follow a random arrow) =================
+const WEAK_MATCH = 0.45, TURN_HINT_MS = 6000, TURN_GIVEUP_MS = 15000;
+const checkOn = () => !site || site.blink_check !== false;   // site setting (column name kept from the blink version)
+let turnCut = 0.25;   // how far the nose must swing, as a share of eye-corner width; set per tablet on the Head-turn test
 const median = a => { const b = [...a].sort((x, y) => x - y); return b[Math.floor(b.length / 2)]; };
+// Nose tip against the midpoint of the outer eye corners, measured along the eye line, as a share of the eye-corner width.
+// In the camera's own (unmirrored) picture a turn to the person's LEFT moves the nose toward larger x, so + = their left.
+// A flat photo tilted or swung any way squeezes nose and eyes alike, so this number barely moves for a photo.
+function yawOf(lm){ const p = lm.positions, a = p[36], b = p[45], n = p[30], w = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  return ((n.x - (a.x + b.x) / 2) * (b.x - a.x) / w + (n.y - (a.y + b.y) / 2) * (b.y - a.y) / w) / w; }
+const newTurn = () => ({ dir: Math.random() < 0.5 ? 'left' : 'right', bs: [], base: null, phase: 'turn', retries: 0, hit: 0 });
+// Feed one fresh head position. Returns 'ready' (start position known: show the arrow), 'turned', 'wrong', 'done' or ''.
+function turnStep(st, y){
+  if (st.base === null){ st.bs.push(y); if (st.bs.length < 2) return ''; st.base = median(st.bs); return 'ready'; }
+  const d = (y - st.base) * (st.dir === 'left' ? 1 : -1);
+  if (st.phase === 'turn'){
+    // must hold past the line for two readings in a row, so one shaky reading doesn't count
+    st.hit = d > turnCut ? (st.hit > 0 ? st.hit + 1 : 1) : d < -turnCut ? (st.hit < 0 ? st.hit - 1 : -1) : 0;
+    if (st.hit >= 2){ st.hit = 0; st.phase = 'back'; return 'turned'; }
+    if (st.hit <= -2){ st.hit = 0; st.retries++; st.dir = Math.random() < 0.5 ? 'left' : 'right'; st.phase = 'wrongback'; return 'wrong'; }
+    return '';
+  }
+  if (Math.abs(y - st.base) < turnCut * 0.5){ if (st.phase === 'back') return 'done'; st.phase = 'turn'; return 'ready'; }   // facing the screen again
+  return '';
+}
+function showArrow(dir, note){
+  $('turnArrow').classList.remove('hidden');
+  if (dir === 'back'){ $('taArr').textContent = '●'; $('taTxt').innerHTML = 'Now look back at the screen<small>Ahora mire la pantalla</small>'; return; }
+  $('taArr').textContent = dir === 'left' ? '←' : '→';   // the person's own left is the left side of the screen they are facing
+  $('taTxt').innerHTML = (note ? note + '<br>' : '') + (dir === 'left' ? 'Turn your head LEFT<small>Gire la cabeza a la IZQUIERDA</small>' : 'Turn your head RIGHT<small>Gire la cabeza a la DERECHA</small>');
+}
+const hideArrow = () => $('turnArrow').classList.add('hidden');
 function startLive(emp, dist){
-  if (stateFor(emp).next === 'locked' || !blinkOn()){ currentDist = dist; currentSnap = null; showEmployee(emp, 'face'); return; }
-  live = { emp, dist, t0: Date.now(), open: [], closedAt: 0, box: null, lostAt: 0, hinted: false };
+  if (stateFor(emp).next === 'locked' || !checkOn()){ currentDist = dist; currentSnap = null; currentRetry = false; showEmployee(emp, 'face'); return; }
+  live = Object.assign(newTurn(), { emp, dist, t0: Date.now(), hinted: false, T: newTracker() });
   showEmployee(emp, 'face', true);
 }
-// Two blink signals, either one counts: the eye shape from the landmarks (eye aspect ratio), and the eye patch contrast
-// (dark iris vs white of the eye disappears when the lid closes) compared with the eyebrow area, so camera blur or a
-// shaking photo, which soften both areas alike, don't look like a blink.
-let mCtx = null;
-function patchStd(v, pts, padX, minH){
-  const xs = pts.map(q => q.x), ys = pts.map(q => q.y); let x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
-  const w = x1 - x0, cy = (y0 + y1) / 2, h = Math.max(y1 - y0, w * minH); x0 -= w * padX; x1 += w * padX; y0 = cy - h / 2;
-  if (!mCtx){ const c = document.createElement('canvas'); c.width = 32; c.height = 16; mCtx = c.getContext('2d', {willReadFrequently:true}); }
-  mCtx.drawImage(v, Math.max(0, x0), Math.max(0, y0), Math.max(2, x1 - x0), Math.max(2, h), 0, 0, 32, 16);
-  const d = mCtx.getImageData(0, 0, 32, 16).data; let n = 0, s = 0, s2 = 0;
-  for (let i = 0; i < d.length; i += 4){ const g = d[i] * .299 + d[i+1] * .587 + d[i+2] * .114; n++; s += g; s2 += g * g; }
-  return Math.sqrt(Math.max(0, s2 / n - (s / n) ** 2));
-}
-function eyeMetrics(v, lm){ const p = lm.positions;
-  const eyes = (patchStd(v, p.slice(36, 42), 0.15, 0.45) + patchStd(v, p.slice(42, 48), 0.15, 0.45)) / 2, brows = patchStd(v, p.slice(17, 27), 0.05, 0.2) || 1;
-  return { ear: eyeRatio(lm), eye: eyes / brows }; }
-// Feed one frame's metrics; returns true when a full blink (close then open) just finished. st holds the running state.
-let blinkCut = 0.7;   // contrast must fall below this share of normal to count as closed; set per tablet on the Blink test
-const pct = (a, q) => { const b = [...a].sort((x, y) => x - y); return b[Math.min(b.length - 1, Math.floor(b.length * q))]; };
-function blinkStep(st, m, now){
-  if (!st.closedAt){
-    const ready = st.open.length >= 8, bE = ready ? pct(st.open.map(o => o.ear), 0.75) : null, bC = ready ? pct(st.open.map(o => o.eye), 0.75) : null;
-    st.bCnow = bC;
-    if (ready && (m.ear < bE * 0.72 || m.eye < bC * blinkCut)){ st.closedAt = now; st.bE = bE; st.bC = bC; return false; }
-    if (!ready || m.eye > bC * 0.9){ st.open.push(m); if (st.open.length > 40) st.open.shift(); }   // ~1 s of open-eye frames
-    return false;
-  }
-  if (m.ear > st.bE * 0.88 && m.eye > st.bC * (blinkCut + (1 - blinkCut) / 2)){ st.closedAt = 0; return true; }
-  if (now - st.closedAt > 1500){ st.closedAt = 0; st.open = []; }    // eyes down / looking away: start over
-  return false;
-}
-function newTracker(){ return { lm: null, box: null, prevBox: null, at: 0, busy: false, lostAt: 0, fresh: false, fps: [] }; }
+function newTracker(){ return { lm: null, box: null, prevBox: null, at: 0, busy: false, lostAt: 0, fresh: false }; }
 function trackTick(T, v){
-  if (T.busy || Date.now() - T.at < 180 || v.readyState < 2) return;
+  if (T.busy || Date.now() - T.at < 100 || v.readyState < 2) return;
   T.busy = true;
   faceapi.detectSingleFace(v, new faceapi.TinyFaceDetectorOptions({inputSize:224, scoreThreshold:0.4})).withFaceLandmarks().then(d => {
     T.busy = false; T.at = Date.now();
@@ -408,30 +409,35 @@ function trackTick(T, v){
   }, () => { T.busy = false; T.at = Date.now(); });
 }
 async function liveStep(v, ctx){
-  const L = live, T = L.T || (L.T = newTracker()), now = Date.now(); trackTick(T, v);
-  if (T.lostAt && now - T.lostAt > 1200){ resetKiosk(); return; }
+  const L = live, T = L.T, now = Date.now(); trackTick(T, v);
+  if (T.lostAt && now - T.lostAt > 2000){ resetKiosk(); return; }
   if (!T.lm) return;
   const b = T.box; ctx.lineWidth = 6; ctx.strokeStyle = '#f2b632'; ctx.strokeRect(b.x, b.y, b.width, b.height);
+  if (!T.fresh) return; T.fresh = false;
   // the face must stay put: a jump in position or size means something was swapped in front of the camera
-  if (T.fresh){ T.fresh = false; const a = T.prevBox;
-    if (a){ const jump = Math.hypot((b.x + b.width/2) - (a.x + a.width/2), (b.y + b.height/2) - (a.y + a.height/2));
-      if (jump > a.width * 0.5 || Math.abs(b.width - a.width) > a.width * 0.4){ resetKiosk(); return; } } }
-  if (blinkStep(L, eyeMetrics(v, T.lm), now)){
-    // confirm it is still the same person after the blink
+  const a = T.prevBox;
+  if (a){ const jump = Math.hypot((b.x + b.width/2) - (a.x + a.width/2), (b.y + b.height/2) - (a.y + a.height/2));
+    if (jump > a.width * 0.6 || Math.abs(b.width - a.width) > a.width * 0.4){ resetKiosk(); return; } }
+  const r = turnStep(L, yawOf(T.lm));
+  if (r === 'ready') showArrow(L.dir);
+  else if (r === 'turned') showArrow('back');
+  else if (r === 'wrong') showArrow(L.dir, 'Other way! / ¡Al otro lado!');
+  else if (r === 'done'){
+    // facing the screen again: confirm it is still the same person
     const chk = await faceapi.detectSingleFace(v, new faceapi.TinyFaceDetectorOptions({inputSize:320, scoreThreshold:0.5})).withFaceLandmarks(true).withFaceDescriptor();
     if (live !== L) return;
     const m = chk && matcher ? matcher.findBestMatch(chk.descriptor) : null;
-    if (!m || m.label !== L.emp.id){ L.open = []; return; }
-    currentDist = Math.max(L.dist, m.distance); currentSnap = takeSnap(); live = null; showEmployee(L.emp, 'face'); return;
+    if (!m || m.label !== L.emp.id){ L.phase = 'back'; return; }
+    hideArrow(); currentDist = Math.max(L.dist, m.distance); currentSnap = takeSnap(); currentRetry = L.retries > 0; live = null; showEmployee(L.emp, 'face'); return;
   }
-  if (!L.hinted && now - L.t0 > BLINK_HINT_MS){ L.hinted = true; $('whoSub').innerHTML = 'No blink seen yet — look straight at the camera and <b>blink</b>.<br>Still stuck? Pick your name.'; }
+  if (!L.hinted && now - L.t0 > TURN_HINT_MS){ L.hinted = true; $('whoSub').innerHTML = 'Turn your head further the way the arrow points, then look back.<br>Still stuck? Pick your name.'; }
 }
 async function loop(){
   const v = $('video'), c = $('overlay');
   if (live && !supOpen && !camBusy && v.readyState >= 2){
     if (c.width !== v.videoWidth){ c.width = v.videoWidth; c.height = v.videoHeight; }
     const ctx = c.getContext('2d'); ctx.clearRect(0,0,c.width,c.height);
-    try { await liveStep(v, ctx); } catch (e) { console.warn('blink', e); }
+    try { await liveStep(v, ctx); } catch (e) { console.warn('turn check', e); }
     requestAnimationFrame(loop); return;
   }
   const fresh = frameSeq !== procSeq && Date.now() - lastFrameAt < 1500;
@@ -539,30 +545,29 @@ function renderRoster(){
   $('rosterList').querySelectorAll('[data-s]').forEach(s => s.onchange = async () => { const e = empById(s.dataset.s); const { error } = await sb.from('employees').update({ schedule_id: s.value }).eq('id', e.id); if (error){ toast('Could not save: ' + error.message); return; } e.schedule_id = s.value; await DB.put('employees', e); audit('schedule_changed', e.id, {to: s.value, by: supUser.user_id}); toast('Schedule updated'); });
 }
 function renderDevice(){ $('devInfo').innerHTML = `Signed in as <b>${me.display_name}</b><br>Site: <b>${site.name}</b> (${site.timezone})<br>Lockout ${site.lockout_min} min · grace ${site.grace_min} min<br>Device id: ${deviceId}`;
-  $('btBlinkOn').textContent = blinkOn() ? 'ON' : 'OFF'; $('btCut').value = Math.round(blinkCut * 100); $('btCutV').textContent = Math.round(blinkCut * 100) + '%'; $('syncInfo').textContent = (lastSync ? 'Last sync ' + fmtT(lastSync) : 'Not synced yet') + ' · ' + punches.filter(p => !p.synced).length + ' punches waiting to upload' + (syncErr ? ' · last error: ' + syncErr : ''); }
+  $('btOn').textContent = checkOn() ? 'ON' : 'OFF'; $('btCut').value = Math.round(turnCut * 100); $('btCutV').textContent = Math.round(turnCut * 100); $('syncInfo').textContent = (lastSync ? 'Last sync ' + fmtT(lastSync) : 'Not synced yet') + ' · ' + punches.filter(p => !p.synced).length + ' punches waiting to upload' + (syncErr ? ' · last error: ' + syncErr : ''); }
 let btRun = false;
-$('btCut').oninput = () => { blinkCut = +$('btCut').value / 100; $('btCutV').textContent = $('btCut').value + '%'; };
-$('btCut').onchange = async () => { await DB.put('kv', {k:'blinkCut', v: blinkCut}); audit('blink_cutoff', deviceId, {cut: blinkCut, by: supUser && supUser.user_id}); toast('Saved on this tablet: blink cutoff ' + Math.round(blinkCut * 100) + '%'); };
-$('btnBlinkTest').onclick = async () => {
+$('btCut').oninput = () => { turnCut = +$('btCut').value / 100; $('btCutV').textContent = $('btCut').value; };
+$('btCut').onchange = async () => { await DB.put('kv', {k:'turnCut', v: turnCut}); audit('turn_setting', deviceId, {cut: turnCut, by: supUser && supUser.user_id}); toast('Saved on this tablet: turn needed ' + Math.round(turnCut * 100)); };
+$('btnTurnTest').onclick = async () => {
   if (btRun){ btRun = false; return; }
-  btRun = true; $('btnBlinkTest').textContent = 'Stop blink test';
-  const st = { open: [], closedAt: 0 }, T = newTracker(), v = $('video'), hist = [], dips = []; let n = 0, last = 0, dipMin = null;
-  $('btDips').textContent = '';
+  btRun = true; $('btnTurnTest').textContent = 'Stop head-turn test';
+  const T = newTracker(), v = $('video'), hist = []; let st = newTurn(), ok = 0, wrong = 0, bigL = 0, bigR = 0, msg = 'Look at the screen…', last = 0;
   while (btRun && supOpen){
     trackTick(T, v); const now = Date.now();
-    if (T.lm && !(T.lostAt && now - T.lostAt > 800)){
-      const m = eyeMetrics(v, T.lm), base = st.closedAt ? st.bC : st.bCnow; if (blinkStep(st, m, now)) n++;
-      // every dip in eye contrast below 92% of normal is logged with its lowest point
-      if (base){ const r = m.eye / base; if (r < 0.92) dipMin = dipMin === null ? r : Math.min(dipMin, r); else if (dipMin !== null){ dips.unshift(Math.round(dipMin * 100)); dips.length = Math.min(dips.length, 15); dipMin = null;
-        $('btDips').innerHTML = 'Recent dips (lowest % of normal, newest first): <b>' + dips.join(', ') + '</b>'; } }
-      hist.push({ t: now }); while (hist.length && now - hist[0].t > 2000) hist.shift();
-      if (now - last > 250){ last = now;
-        $('btOut').textContent = 'Blinks seen: ' + n;
-        $('btVals').innerHTML = `Readings per second: <b>${Math.round(hist.length / Math.max(0.5, (now - hist[0].t) / 1000))}</b> · counts as a blink below <b>${Math.round(blinkCut * 100)}%</b>${st.closedAt ? ' · <b>CLOSED</b>' : ''}${base ? '' : ' · learning your open eyes…'}`; }
-    } else if (now - last > 250){ last = now; $('btVals').textContent = 'No face in view'; }
+    if (T.fresh && T.lm){ T.fresh = false; hist.push(now); while (hist.length && now - hist[0] > 2000) hist.shift();
+      const y = yawOf(T.lm), r = turnStep(st, y);
+      if (r === 'done'){ ok++; st = newTurn(); msg = 'Good turn ✓ — look at the screen…'; }
+      else if (r === 'ready') msg = st.dir === 'left' ? '← Turn LEFT' : 'Turn RIGHT →';
+      else if (r === 'turned') msg = 'Now look back at the screen';
+      else if (r === 'wrong'){ wrong++; msg = 'Other way! ' + (st.dir === 'left' ? '← LEFT' : 'RIGHT →'); }
+      if (st.base !== null){ const d = y - st.base; bigL = Math.max(bigL, d); bigR = Math.max(bigR, -d); }
+      $('btOut').textContent = msg;
+      $('btVals').innerHTML = `Good turns: <b>${ok}</b> · wrong way: <b>${wrong}</b><br>Head position now: <b>${st.base === null ? '…' : Math.round((y - st.base) * 100)}</b> (left +, right −; counts past ±${Math.round(turnCut * 100)}) · biggest turn seen: left <b>${Math.round(bigL * 100)}</b>, right <b>${Math.round(bigR * 100)}</b> · readings per second: <b>${Math.round(hist.length / 2)}</b>`;
+    } else if (T.lostAt && now - last > 250){ last = now; $('btVals').textContent = 'No face in view'; }
     await new Promise(r => requestAnimationFrame(r));
   }
-  btRun = false; $('btnBlinkTest').textContent = 'Start blink test';
+  btRun = false; $('btnTurnTest').textContent = 'Start head-turn test';
 };
 $('btnSyncNow').onclick = async () => { await push(); await pull(); renderDevice(); toast(syncErr ? 'Sync problem: ' + syncErr : 'Synced'); };
 $('btnDisconnect').onclick = async () => { if (supUser.role !== 'admin'){ toast('Only an admin can disconnect a tablet'); return; } if (!confirm('Sign this tablet out? Unsynced punches will be uploaded first.')) return; await push(); await sb.auth.signOut(); location.reload(); };
@@ -639,7 +644,7 @@ async function runKiosk(){
   $('lsub').textContent = 'Loading site'; const cache = await DB.get('kv', 'cache');
   if (cache){ site = cache.v.site; schedules = cache.v.schedules; }
   employees = await DB.all('employees'); punches = await DB.all('punches'); buildMatcher();
-  { const bc = await DB.get('kv', 'blinkCut'); if (bc && bc.v >= 0.4 && bc.v <= 0.95) blinkCut = bc.v; }
+  { const tc = await DB.get('kv', 'turnCut'); if (tc && tc.v >= 0.1 && tc.v <= 0.5) turnCut = tc.v; }
   deviceId = (await DB.get('kv','device') || {}).v; if (!deviceId){ deviceId = 'tab-' + uid(); await DB.put('kv', {k:'device', v:deviceId}); }
   await pull();
   if (!site){ $('lsub').innerHTML = '<div class="err">This tablet account has no site assigned. An admin needs to give it a site on the review page (Users).</div>'; return; }
@@ -651,7 +656,7 @@ async function runKiosk(){
 (async () => {
   try {
     await DB.open();
-    const nets = [['tinyFaceDetector','Face detector'],['faceLandmark68TinyNet','Landmarks'],['faceRecognitionNet','Recognition'],['faceLandmark68Net','Blink check']]; let i = 0;
+    const nets = [['tinyFaceDetector','Face detector'],['faceLandmark68TinyNet','Landmarks'],['faceRecognitionNet','Recognition'],['faceLandmark68Net','Head-turn check']]; let i = 0;
     for (const [n, l] of nets){ $('lsub').textContent = l; await faceapi.nets[n].loadFromUri('/models'); $('lbar').style.width = (++i/nets.length*100) + '%'; }
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
     me = navigator.onLine ? await loadProfile() : ((await DB.get('kv','cache')||{}).v||{}).me;
