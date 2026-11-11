@@ -395,17 +395,25 @@ function blinkStep(st, m, now){
   if (now - st.closedAt > 1500){ st.closedAt = 0; st.open = []; }    // eyes down / looking away: start over
   return false;
 }
+function newTracker(){ return { lm: null, box: null, prevBox: null, at: 0, busy: false, lostAt: 0, fresh: false, fps: [] }; }
+function trackTick(T, v){
+  if (T.busy || Date.now() - T.at < 180 || v.readyState < 2) return;
+  T.busy = true;
+  faceapi.detectSingleFace(v, new faceapi.TinyFaceDetectorOptions({inputSize:224, scoreThreshold:0.4})).withFaceLandmarks().then(d => {
+    T.busy = false; T.at = Date.now();
+    if (d){ T.prevBox = T.box; T.box = d.detection.box; T.lm = d.landmarks; T.lostAt = 0; T.fresh = true; } else if (!T.lostAt) T.lostAt = Date.now();
+  }, () => { T.busy = false; T.at = Date.now(); });
+}
 async function liveStep(v, ctx){
-  const L = live, det = await faceapi.detectSingleFace(v, new faceapi.TinyFaceDetectorOptions({inputSize:224, scoreThreshold:0.4})).withFaceLandmarks();
-  if (live !== L) return; const now = Date.now();
-  if (!det){ if (!L.lostAt) L.lostAt = now; else if (now - L.lostAt > 1200) resetKiosk(); return; }
-  L.lostAt = 0; const b = det.detection.box;
-  ctx.lineWidth = 6; ctx.strokeStyle = '#f2b632'; ctx.strokeRect(b.x, b.y, b.width, b.height);
+  const L = live, T = L.T || (L.T = newTracker()), now = Date.now(); trackTick(T, v);
+  if (T.lostAt && now - T.lostAt > 1200){ resetKiosk(); return; }
+  if (!T.lm) return;
+  const b = T.box; ctx.lineWidth = 6; ctx.strokeStyle = '#f2b632'; ctx.strokeRect(b.x, b.y, b.width, b.height);
   // the face must stay put: a jump in position or size means something was swapped in front of the camera
-  if (L.box){ const jump = Math.hypot((b.x + b.width/2) - (L.box.x + L.box.width/2), (b.y + b.height/2) - (L.box.y + L.box.height/2));
-    if (jump > L.box.width * 0.5 || Math.abs(b.width - L.box.width) > L.box.width * 0.4){ resetKiosk(); return; } }
-  L.box = b;
-  if (blinkStep(L, eyeMetrics(v, det.landmarks), now)){
+  if (T.fresh){ T.fresh = false; const a = T.prevBox;
+    if (a){ const jump = Math.hypot((b.x + b.width/2) - (a.x + a.width/2), (b.y + b.height/2) - (a.y + a.height/2));
+      if (jump > a.width * 0.5 || Math.abs(b.width - a.width) > a.width * 0.4){ resetKiosk(); return; } } }
+  if (blinkStep(L, eyeMetrics(v, T.lm), now)){
     // confirm it is still the same person after the blink
     const chk = await faceapi.detectSingleFace(v, new faceapi.TinyFaceDetectorOptions({inputSize:320, scoreThreshold:0.5})).withFaceLandmarks(true).withFaceDescriptor();
     if (live !== L) return;
@@ -532,11 +540,19 @@ function renderDevice(){ $('devInfo').innerHTML = `Signed in as <b>${me.display_
 let btRun = false;
 $('btnBlinkTest').onclick = async () => {
   if (btRun){ btRun = false; return; }
-  btRun = true; $('btnBlinkTest').textContent = 'Stop blink test'; const st = { open: [], closedAt: 0 }; let n = 0; const v = $('video');
+  btRun = true; $('btnBlinkTest').textContent = 'Stop blink test';
+  const st = { open: [], closedAt: 0 }, T = newTracker(), v = $('video'), hist = []; let n = 0, last = 0;
   while (btRun && supOpen){
-    const det = v.readyState >= 2 ? await faceapi.detectSingleFace(v, new faceapi.TinyFaceDetectorOptions({inputSize:224, scoreThreshold:0.4})).withFaceLandmarks() : null;
-    if (det){ const m = eyeMetrics(v, det.landmarks); if (blinkStep(st, m, Date.now())) n++; $('btOut').textContent = 'Blinks seen: ' + n; $('btVals').textContent = 'eye shape ' + m.ear.toFixed(3) + ' · eye contrast ' + m.eye.toFixed(2) + (st.closedAt ? ' · CLOSED' : ''); }
-    else $('btVals').textContent = 'No face in view';
+    trackTick(T, v); const now = Date.now();
+    if (T.lm && !(T.lostAt && now - T.lostAt > 800)){
+      const m = eyeMetrics(v, T.lm); if (blinkStep(st, m, now)) n++;
+      hist.push({ t: now, eye: m.eye, ear: m.ear }); while (hist.length && now - hist[0].t > 2000) hist.shift();
+      if (now - last > 250){ last = now;
+        const bC = st.open.length >= 3 ? median(st.open.map(o => o.eye)) : null, bE = st.open.length >= 3 ? median(st.open.map(o => o.ear)) : null;
+        const lowC = Math.min(...hist.map(h => h.eye)), lowE = Math.min(...hist.map(h => h.ear)), fps = Math.round(hist.length / Math.max(0.5, (now - hist[0].t) / 1000));
+        $('btOut').textContent = 'Blinks seen: ' + n;
+        $('btVals').innerHTML = `Readings per second: <b>${fps}</b><br>Lowest in last 2 s — contrast <b>${bC ? Math.round(lowC / bC * 100) + '%' : '…'}</b> of normal (blink at 60%), eye shape <b>${bE ? Math.round(lowE / bE * 100) + '%' : '…'}</b> of normal (blink at 72%)${st.closedAt ? ' · <b>CLOSED</b>' : ''}`; }
+    } else if (now - last > 250){ last = now; $('btVals').textContent = 'No face in view'; }
     await new Promise(r => requestAnimationFrame(r));
   }
   btRun = false; $('btnBlinkTest').textContent = 'Start blink test';
