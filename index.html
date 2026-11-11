@@ -161,7 +161,7 @@
     <div id="t-device" class="tab hidden">
       <div class="card"><h3>This tablet</h3><div class="note" id="devInfo"></div></div>
       <div class="card"><h3>Sync</h3><div class="note" id="syncInfo"></div><button class="btn" id="btnSyncNow">Sync now</button></div>
-      <div class="card"><h3>Blink test</h3><div class="note">Stand in front of the camera and blink a few times: the count should go up once per blink. Then hold up a photo of a face and move it around: the count should stay put. Blink check for this site is <b id="btBlinkOn"></b> (change it on the review page, Sites).</div><div style="font-size:28px;font-weight:800" id="btOut">—</div><div class="note" id="btVals"></div><button class="btn" id="btnBlinkTest">Start blink test</button></div>
+      <div class="card"><h3>Blink test</h3><div class="note">Stand in front of the camera and blink a few times: the count should go up once per blink. Then hold up a photo of a face and move it around: the count should stay put. Blink check for this site is <b id="btBlinkOn"></b> (change it on the review page, Sites).</div><div style="font-size:28px;font-weight:800" id="btOut">—</div><div class="note" id="btVals"></div><div class="note" id="btDips"></div><label class="f">Blink cutoff for this tablet: <b id="btCutV"></b> (higher = catches lighter blinks, but a photo gets closer to passing)<input type="range" id="btCut" min="50" max="92" step="1" style="width:100%"></label><button class="btn" id="btnBlinkTest">Start blink test</button></div>
       <button class="btn danger" id="btnDisconnect">Disconnect tablet (admin only)</button>
     </div>
   </div>
@@ -384,14 +384,17 @@ function eyeMetrics(v, lm){ const p = lm.positions;
   const eyes = (patchStd(v, p.slice(36, 42), 0.15, 0.45) + patchStd(v, p.slice(42, 48), 0.15, 0.45)) / 2, brows = patchStd(v, p.slice(17, 27), 0.05, 0.2) || 1;
   return { ear: eyeRatio(lm), eye: eyes / brows }; }
 // Feed one frame's metrics; returns true when a full blink (close then open) just finished. st holds the running state.
+let blinkCut = 0.7;   // contrast must fall below this share of normal to count as closed; set per tablet on the Blink test
+const pct = (a, q) => { const b = [...a].sort((x, y) => x - y); return b[Math.min(b.length - 1, Math.floor(b.length * q))]; };
 function blinkStep(st, m, now){
   if (!st.closedAt){
-    const bE = st.open.length >= 3 ? median(st.open.map(o => o.ear)) : null, bC = st.open.length >= 3 ? median(st.open.map(o => o.eye)) : null;
-    if (bE && (m.ear < bE * 0.72 || m.eye < bC * 0.6)){ st.closedAt = now; st.bE = bE; st.bC = bC; }
-    else { st.open.push(m); if (st.open.length > 10) st.open.shift(); }
+    const ready = st.open.length >= 8, bE = ready ? pct(st.open.map(o => o.ear), 0.75) : null, bC = ready ? pct(st.open.map(o => o.eye), 0.75) : null;
+    st.bCnow = bC;
+    if (ready && (m.ear < bE * 0.72 || m.eye < bC * blinkCut)){ st.closedAt = now; st.bE = bE; st.bC = bC; return false; }
+    if (!ready || m.eye > bC * 0.9){ st.open.push(m); if (st.open.length > 40) st.open.shift(); }   // ~1 s of open-eye frames
     return false;
   }
-  if (m.ear > st.bE * 0.88 && m.eye > st.bC * 0.8){ st.closedAt = 0; return true; }
+  if (m.ear > st.bE * 0.88 && m.eye > st.bC * (blinkCut + (1 - blinkCut) / 2)){ st.closedAt = 0; return true; }
   if (now - st.closedAt > 1500){ st.closedAt = 0; st.open = []; }    // eyes down / looking away: start over
   return false;
 }
@@ -536,22 +539,26 @@ function renderRoster(){
   $('rosterList').querySelectorAll('[data-s]').forEach(s => s.onchange = async () => { const e = empById(s.dataset.s); const { error } = await sb.from('employees').update({ schedule_id: s.value }).eq('id', e.id); if (error){ toast('Could not save: ' + error.message); return; } e.schedule_id = s.value; await DB.put('employees', e); audit('schedule_changed', e.id, {to: s.value, by: supUser.user_id}); toast('Schedule updated'); });
 }
 function renderDevice(){ $('devInfo').innerHTML = `Signed in as <b>${me.display_name}</b><br>Site: <b>${site.name}</b> (${site.timezone})<br>Lockout ${site.lockout_min} min · grace ${site.grace_min} min<br>Device id: ${deviceId}`;
-  $('btBlinkOn').textContent = blinkOn() ? 'ON' : 'OFF'; $('syncInfo').textContent = (lastSync ? 'Last sync ' + fmtT(lastSync) : 'Not synced yet') + ' · ' + punches.filter(p => !p.synced).length + ' punches waiting to upload' + (syncErr ? ' · last error: ' + syncErr : ''); }
+  $('btBlinkOn').textContent = blinkOn() ? 'ON' : 'OFF'; $('btCut').value = Math.round(blinkCut * 100); $('btCutV').textContent = Math.round(blinkCut * 100) + '%'; $('syncInfo').textContent = (lastSync ? 'Last sync ' + fmtT(lastSync) : 'Not synced yet') + ' · ' + punches.filter(p => !p.synced).length + ' punches waiting to upload' + (syncErr ? ' · last error: ' + syncErr : ''); }
 let btRun = false;
+$('btCut').oninput = () => { blinkCut = +$('btCut').value / 100; $('btCutV').textContent = $('btCut').value + '%'; };
+$('btCut').onchange = async () => { await DB.put('kv', {k:'blinkCut', v: blinkCut}); audit('blink_cutoff', deviceId, {cut: blinkCut, by: supUser && supUser.user_id}); toast('Saved on this tablet: blink cutoff ' + Math.round(blinkCut * 100) + '%'); };
 $('btnBlinkTest').onclick = async () => {
   if (btRun){ btRun = false; return; }
   btRun = true; $('btnBlinkTest').textContent = 'Stop blink test';
-  const st = { open: [], closedAt: 0 }, T = newTracker(), v = $('video'), hist = []; let n = 0, last = 0;
+  const st = { open: [], closedAt: 0 }, T = newTracker(), v = $('video'), hist = [], dips = []; let n = 0, last = 0, dipMin = null;
+  $('btDips').textContent = '';
   while (btRun && supOpen){
     trackTick(T, v); const now = Date.now();
     if (T.lm && !(T.lostAt && now - T.lostAt > 800)){
-      const m = eyeMetrics(v, T.lm); if (blinkStep(st, m, now)) n++;
-      hist.push({ t: now, eye: m.eye, ear: m.ear }); while (hist.length && now - hist[0].t > 2000) hist.shift();
+      const m = eyeMetrics(v, T.lm), base = st.closedAt ? st.bC : st.bCnow; if (blinkStep(st, m, now)) n++;
+      // every dip in eye contrast below 92% of normal is logged with its lowest point
+      if (base){ const r = m.eye / base; if (r < 0.92) dipMin = dipMin === null ? r : Math.min(dipMin, r); else if (dipMin !== null){ dips.unshift(Math.round(dipMin * 100)); dips.length = Math.min(dips.length, 15); dipMin = null;
+        $('btDips').innerHTML = 'Recent dips (lowest % of normal, newest first): <b>' + dips.join(', ') + '</b>'; } }
+      hist.push({ t: now }); while (hist.length && now - hist[0].t > 2000) hist.shift();
       if (now - last > 250){ last = now;
-        const bC = st.open.length >= 3 ? median(st.open.map(o => o.eye)) : null, bE = st.open.length >= 3 ? median(st.open.map(o => o.ear)) : null;
-        const lowC = Math.min(...hist.map(h => h.eye)), lowE = Math.min(...hist.map(h => h.ear)), fps = Math.round(hist.length / Math.max(0.5, (now - hist[0].t) / 1000));
         $('btOut').textContent = 'Blinks seen: ' + n;
-        $('btVals').innerHTML = `Readings per second: <b>${fps}</b><br>Lowest in last 2 s — contrast <b>${bC ? Math.round(lowC / bC * 100) + '%' : '…'}</b> of normal (blink at 60%), eye shape <b>${bE ? Math.round(lowE / bE * 100) + '%' : '…'}</b> of normal (blink at 72%)${st.closedAt ? ' · <b>CLOSED</b>' : ''}`; }
+        $('btVals').innerHTML = `Readings per second: <b>${Math.round(hist.length / Math.max(0.5, (now - hist[0].t) / 1000))}</b> · counts as a blink below <b>${Math.round(blinkCut * 100)}%</b>${st.closedAt ? ' · <b>CLOSED</b>' : ''}${base ? '' : ' · learning your open eyes…'}`; }
     } else if (now - last > 250){ last = now; $('btVals').textContent = 'No face in view'; }
     await new Promise(r => requestAnimationFrame(r));
   }
@@ -632,6 +639,7 @@ async function runKiosk(){
   $('lsub').textContent = 'Loading site'; const cache = await DB.get('kv', 'cache');
   if (cache){ site = cache.v.site; schedules = cache.v.schedules; }
   employees = await DB.all('employees'); punches = await DB.all('punches'); buildMatcher();
+  { const bc = await DB.get('kv', 'blinkCut'); if (bc && bc.v >= 0.4 && bc.v <= 0.95) blinkCut = bc.v; }
   deviceId = (await DB.get('kv','device') || {}).v; if (!deviceId){ deviceId = 'tab-' + uid(); await DB.put('kv', {k:'device', v:deviceId}); }
   await pull();
   if (!site){ $('lsub').innerHTML = '<div class="err">This tablet account has no site assigned. An admin needs to give it a site on the review page (Users).</div>'; return; }
