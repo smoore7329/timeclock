@@ -223,8 +223,8 @@
   <div id="v-users" class="view hidden">
     <div class="card"><h2>Add user</h2>
       <div class="row"><label class="f">Display name<input type="text" id="uName"></label><label class="f">Email (login)<input type="email" id="uEmail"></label><label class="f">Password<input type="text" id="uPass" placeholder="8+ characters"></label></div>
-      <div class="row"><label class="f">Role<select id="uRole"><option value="supervisor">Supervisor</option><option value="admin">Admin</option><option value="device">Tablet (kiosk device)</option><option value="foreman">Sub foreman (one sub company)</option></select></label><label class="f hidden" id="uCoWrap">Sub company<input type="text" id="uCo" list="uCoList" placeholder="as on the employees"></label><datalist id="uCoList"></datalist><label class="f">Sites<select id="uSites" multiple size="3"></select></label><label class="f">Kiosk PIN (supervisors/admins)<input type="text" id="uPin" inputmode="numeric" placeholder="4–6 digits"></label><button class="btn" id="uAdd">Create</button></div>
-      <div class="note">Tablets: use an email like <b>palestine-tab1@aime.local</b> and one site. The PIN is what supervisors type at the kiosk; the password is for this page. A <b>sub foreman</b> needs no sites or PIN — he signs in here and sees only his company's subs, at whatever site they're on.</div><div class="note" id="uMsg"></div></div>
+      <div class="row"><label class="f">Role<select id="uRole"><option value="supervisor">Supervisor</option><option value="admin">Admin</option><option value="device">Tablet (kiosk device)</option><option value="foreman">Sub foreman (one sub company)</option><option value="safety">Site safety (Daily Safety Topics only)</option></select></label><label class="f hidden" id="uCoWrap">Sub company<input type="text" id="uCo" list="uCoList" placeholder="as on the employees"></label><datalist id="uCoList"></datalist><label class="f">Sites<select id="uSites" multiple size="3"></select></label><label class="f">Kiosk PIN (supervisors/admins)<input type="text" id="uPin" inputmode="numeric" placeholder="4–6 digits"></label><button class="btn" id="uAdd">Create</button></div>
+      <div class="note">Tablets: use an email like <b>palestine-tab1@aime.local</b> and one site. The PIN is what supervisors type at the kiosk; the password is for this page. A <b>sub foreman</b> needs no sites or PIN — he signs in here and sees only his company's subs, at whatever site they're on. <b>Site safety</b> needs their site(s), no PIN — they sign in at <b>safety.html</b> to pick the day's safety topic and see nothing else.</div><div class="note" id="uMsg"></div></div>
     <div class="card"><h2>People and tablets</h2><div class="tableWrap"><table id="userTable"></table></div></div>
   </div>
 </main>
@@ -471,6 +471,7 @@ async function boot(){
   if (!prof || !prof.active || prof.role === 'device'){
     const why = perr ? 'profile lookup failed: ' + perr.message : !prof ? 'no profile found for user ' + session.user.id + ' (' + (session.user.email||'') + ')' : !prof.active ? 'profile is disabled' : 'this is a tablet login, not a person';
     $('lMsg').textContent = 'This login has no access to the review page — ' + why + '.'; await sb.auth.signOut(); $('v-login').classList.remove('hidden'); return; }
+  if (prof.role === 'safety'){ location.replace('safety.html'); return; }   // toolbox-talk logins only use safety.html
   me = prof; $('v-login').classList.add('hidden'); $('nav').classList.remove('hidden'); $('btnOut').classList.remove('hidden'); $('btnPw').classList.remove('hidden'); $('whoami').textContent = me.display_name + ' · ' + (isForeman() ? 'foreman · ' + (me.company || '?') : me.role);
   $('navUsers').classList.toggle('hidden', !isAdmin()); $('siteAddCard').classList.toggle('hidden', !isAdmin()); $('empAddCard').classList.toggle('hidden', !isAdmin()); $('clsCard').classList.toggle('hidden', !isAdmin());
   if (isForeman()){ document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('hidden', b.dataset.v !== 'review')); arQuick('12m'); await loadRefs(); if (!sites.length) toast('No ' + (me.company || '') + ' crew is assigned to a site yet.', 6000); showView('review'); return; }
@@ -581,7 +582,6 @@ function renderWeek(){
   $('rvWeek').querySelectorAll('tr.click').forEach(tr => tr.onclick = () => { const id = RV.rows[+tr.dataset.i].emp.id; RV_OPEN = RV_OPEN === id ? null : id; renderWeek(); });
   const oi = RV.rows.findIndex(r => r.emp.id === RV_OPEN);
   if (oi >= 0) $('rvWeek').querySelectorAll('tr.detail button[data-a]').forEach(b => b.onclick = e => { e.stopPropagation(); (b.dataset.a === 'punches' ? editPunches : editTime)(RV.rows[oi], +b.dataset.d); });
-  if (oi >= 0) $('rvWeek').querySelectorAll('tr.detail [data-ph]').forEach(b => b.onclick = e => { e.stopPropagation(); showPunchPhoto(b.dataset.ph); });
   renderFlags(); renderLate();
 }
 function lateItems(){
@@ -614,7 +614,7 @@ function detailHtml(r){
   const body = r.days.map((d, di) => {
     run = Rules.round2(run + (d.paid || 0)); const ot = Rules.round2(Math.max(0, run - 40));
     const dn = new Date(d.dateKey + 'T12:00:00Z').toLocaleDateString(undefined, {weekday:'short', month:'numeric', day:'numeric', timeZone:'UTC'});
-    const ps = d.punches.map(p => `<span class="badge ${p.type}" data-ph="${p.id}" style="cursor:pointer" title="Click to see the photo">${p.type.toUpperCase()} ${Rules.fmtTime(p.ts, tz)}${Rules.dayKey(p.ts, tz) !== d.dateKey ? ' <small title="next calendar day">+1</small>' : ''}${p.method === 'fallback' ? ' <span title="manual pick">✎</span>' : p.method === 'manual' ? ' ✎' : ''}</span>`).join(' ');
+    const ps = d.punches.map(p => `<span class="badge ${p.type}">${p.type.toUpperCase()} ${Rules.fmtTime(p.ts, tz)}${Rules.dayKey(p.ts, tz) !== d.dateKey ? ' <small title="next calendar day">+1</small>' : ''}${p.method === 'fallback' ? ' <span title="manual pick">✎</span>' : p.method === 'manual' ? ' ✎' : ''}</span>`).join(' ');
     const has = d.punches.length || d.paid || d.pto || d.guar;
     return `<tr class="dayrow"><td>${dn}</td><td>${ps || '<span class="note">—</span>'}</td><td class="n">${d.lunchMin || '-'}</td><td class="n">${d.worked || '-'}</td><td class="n">${d.breakMin ? d.breakMin + 'm' : '-'}</td><td class="n"><b>${d.paid || '-'}</b>${d.pto ? '<br><span class="note">+' + d.pto + ' PTO</span>' : ''}${d.guar ? '<br><span class="note">+' + d.guar + ' guar</span>' : ''}${d.ts2s ? '<br><span class="note" title="logged only, not in paid">' + d.ts2s + ' travel S&rarr;S</span>' : ''}${d.th2s ? '<br><span class="note" title="logged only, not in paid">' + d.th2s + ' travel H&rarr;S</span>' : ''}</td><td class="n">${has ? `<span class="wtd${ot ? ' ot' : ''}">${run}</span>${ot ? `<br><span class="note">${ot} OT</span>` : ''}` : '<span class="note">' + run + '</span>'}</td><td>${d.flags.map(f => `<span class="badge flag">${esc(f)}</span>`).join(' ')}</td>${RV.close ? (di === 0 ? `<td rowspan="7" class="lockNote">Week closed — locked.<br>Pay corrections in an open week.</td>` : '') : `<td style="white-space:nowrap"><button class="btn sm ghost" data-a="punches" data-d="${di}">Edit / delete punches</button> <button class="btn sm ghost" data-a="time" data-d="${di}">Edit / approve extra time</button></td>`}</tr>`;
   }).join('');
@@ -654,17 +654,9 @@ async function editTime(r, di, opts = {}){
     await audit('day_adjustment', r.emp.id + ':' + d.dateKey, a.id ? a : null, row, note); toast('Saved'); loadWeek();
   });
 }
-async function showPunchPhoto(id){
-  const p = RV.punches.find(x => x.id === id); if (!p) return; const tz = RV.site.timezone; let src = p.photo;
-  if (!src){ const { data } = await sb.from('punch_photos').select('photo').eq('punch_id', id).maybeSingle(); src = data && data.photo; }
-  const e = RV.rows.find(r => r.emp.id === p.employee_id), days = RV.site.photo_days ?? 15;
-  await modal(esc(e ? e.emp.name : '?') + ' — ' + p.type.toUpperCase() + ' ' + Rules.fmtTime(p.ts, tz),
-    (src ? `<img src="${src}" style="width:100%;max-width:360px;border-radius:8px;transform:scaleX(-1);display:block;margin:0 auto 8px">` : `<div class="note">No photo for this punch. Photos are kept ${days} days, and punches added on this page or made before photos were turned on have none.</div>`) +
-    `<div class="note">${Rules.dayKey(p.ts, tz)} · ${esc(p.method)}${p.match_dist != null ? ' · face match ' + p.match_dist + ' (lower is closer; over 0.45 is flagged)' : ''}${p.flag ? ' · ' + esc(p.flag) : ''}</div>`, async () => true, 'Close');
-}
 function renderFlags(){
   const tz = RV.site.timezone; const list = RV.punches.filter(p => p.flag && !p.reviewed);
-  $('rvFlags').innerHTML = list.length ? list.map(p => { const e = RV.rows.find(r => r.emp.id === p.employee_id); return `<div class="flagItem">${p.photo ? `<img src="${p.photo}" alt="">` : ''}<div style="flex:1"><b>${esc((e||{}).emp ? e.emp.name : '?')}</b> — ${p.type.toUpperCase()} ${Rules.fmtTime(p.ts, tz)} on ${Rules.dayKey(p.ts, tz)}<br><span class="badge flag">${esc(p.flag)}</span> <span class="note">${p.method}${p.match_dist != null ? ' · match ' + p.match_dist : ''}</span></div><div style="display:flex;flex-direction:column;gap:6px"><button class="btn sm ok" data-ok="${p.id}">${RV.close ? 'Acknowledge' : 'Looks right'}</button>${RV.close ? '' : `<button class="btn sm danger" data-re="${p.id}">Wrong person</button>`}</div></div>`; }).join('') : '<div class="note">Nothing waiting. Flags from the rules (late, lunch, missed punch-out) are shown per day above.</div>';
+  $('rvFlags').innerHTML = list.length ? list.map(p => { const e = RV.rows.find(r => r.emp.id === p.employee_id); return `<div class="flagItem">${p.photo ? `<img src="${p.photo}" alt="">` : ''}<div style="flex:1"><b>${esc((e||{}).emp ? e.emp.name : '?')}</b> — ${p.type.toUpperCase()} ${Rules.fmtTime(p.ts, tz)} on ${Rules.dayKey(p.ts, tz)}<br><span class="badge flag">${esc(p.flag)}</span> <span class="note">${p.method}</span></div><div style="display:flex;flex-direction:column;gap:6px"><button class="btn sm ok" data-ok="${p.id}">${RV.close ? 'Acknowledge' : 'Looks right'}</button>${RV.close ? '' : `<button class="btn sm danger" data-re="${p.id}">Wrong person</button>`}</div></div>`; }).join('') : '<div class="note">Nothing waiting. Flags from the rules (late, lunch, missed punch-out) are shown per day above.</div>';
   $('rvFlags').querySelectorAll('[data-ok]').forEach(b => b.onclick = async () => { const p = RV.punches.find(x => x.id === b.dataset.ok); const { error } = await sb.from('punches').update({ reviewed: true }).eq('id', p.id); if (error){ toast(error.message); return; } await audit('punch_reviewed', p.id, {flag: p.flag}, {reviewed: true}, 'confirmed at review'); toast('Confirmed'); loadWeek(); });
   $('rvFlags').querySelectorAll('[data-re]').forEach(b => b.onclick = async () => { const p = RV.punches.find(x => x.id === b.dataset.re);
     const opts = RV.rows.filter(r => !r.week.salary).map(r => `<option value="${r.emp.id}" ${r.emp.id === p.employee_id ? 'selected' : ''}>${esc(r.emp.name)}</option>`).join('');
@@ -979,9 +971,6 @@ $('eAdd').onclick = async () => {
 function renderSites(){
   $('sitesList').innerHTML = mySites().map(s => `<div class="card"><h2>${esc(s.name)} <span class="note">${s.timezone}</span></h2>
     <div class="row"><label class="f">Lockout after punch-out (min)<input type="number" data-k="lockout_min" data-s="${s.id}" value="${s.lockout_min}"></label><label class="f">Grace after scheduled end (min)<input type="number" data-k="grace_min" data-s="${s.id}" value="${s.grace_min}"></label><label class="f">Flag lunches over (min)<input type="number" data-k="lunch_flag_min" data-s="${s.id}" value="${s.lunch_flag_min}"></label><label class="f">Deduct if no lunch punched (min)<input type="number" data-k="auto_deduct_min" data-s="${s.id}" value="${s.auto_deduct_min}"></label>${isAdmin() ? `<label class="f">Time zone<select data-k="timezone" data-s="${s.id}">${['America/New_York','America/Chicago','America/Denver','America/Phoenix','America/Los_Angeles'].map(z => `<option ${z===s.timezone?'selected':''}>${z}</option>`).join('')}</select></label>` : ''}<button class="btn" data-savesite="${s.id}">Save</button></div>
-    <h3 style="margin-top:14px">Punch photos &amp; head-turn check</h3>
-    <div class="row"><label class="f">Head-turn check at the tablet<select data-l="blink_check" data-ls="${s.id}"><option value="false" ${s.blink_check ? '' : 'selected'}>Off</option><option value="true" ${s.blink_check ? 'selected' : ''}>On</option></select></label><label class="f">Keep punch photos (days)<input type="number" min="1" data-l="photo_days" data-ls="${s.id}" value="${s.photo_days ?? 15}"></label><label class="f">Random spot-checks per week<input type="number" min="0" data-l="spot_checks" data-ls="${s.id}" value="${s.spot_checks ?? 3}"></label><button class="btn" data-savelive="${s.id}">Save photo settings</button></div>
-    <div class="note">Every punch saves a small photo. Only flagged punches (manual name pick, weak face match, random spot-check) go to <b>Needs attention</b> on the Review tab; any other punch's photo opens when you click the punch. Unflagged photos are deleted after the days above; flagged ones are kept until confirmed, then follow the same rule. Test the head-turn check on the tablet first (Supervisor → Tablet → Head-turn test) before turning it on. A punch where the person turned the wrong way first is flagged too.</div>
     <h3 style="margin-top:14px">Customer daily form (Headcount tab)</h3>
     <div class="row"><label class="f" style="flex:2 1 320px">Form link<input type="text" data-f="hc_form_url" data-fs="${s.id}" value="${esc(s.hc_form_url || '')}" placeholder="https://app.smartsheet.com/b/form/…"></label><label class="f">Site (exactly as on the form)<input type="text" data-f="hc_form_site" data-fs="${s.id}" value="${esc(s.hc_form_site || '')}" placeholder="BEAZ 2A"></label><label class="f">Company<input type="text" data-f="hc_form_company" data-fs="${s.id}" value="${esc(s.hc_form_company || '')}" placeholder="AIME"></label><label class="f">Scope (blank = pick on form)<input type="text" data-f="hc_form_scope" data-fs="${s.id}" value="${esc(s.hc_form_scope || '')}"></label></div>
     <div class="row"><label class="f" style="flex:2 1 320px">Tag sheets (Smartsheet sheet IDs, comma separated — open tags + archive)<input type="text" data-f="hc_tag_sheets" data-fs="${s.id}" value="${esc(s.hc_tag_sheets || '')}" placeholder="2731278116802436, 3343843532427140"></label><button class="btn" data-saveform="${s.id}">Save form settings</button></div>
@@ -990,11 +979,6 @@ function renderSites(){
     <div class="row" style="margin-top:8px"><label class="f">New schedule name<input type="text" data-scn="${s.id}" placeholder="e.g. Night 6pm–4:30am"></label><label class="f">Start<input type="time" data-scs="${s.id}" value="07:00"></label><label class="f">End<input type="time" data-sce="${s.id}" value="15:30"></label><button class="btn ghost" data-addsched="${s.id}">Add schedule</button></div></div>`).join('');
   $('sitesList').querySelectorAll('[data-savesite]').forEach(b => b.onclick = async () => { const id = b.dataset.savesite; const upd = {}; $('sitesList').querySelectorAll(`[data-s="${id}"]`).forEach(i => upd[i.dataset.k] = i.dataset.k === 'timezone' ? i.value : +i.value); const before = siteById(id);
     const { error } = await sb.from('sites').update(upd).eq('id', id); if (error){ toast(error.message); return; } await audit('site_settings', id, before, upd, 'site settings saved'); toast('Saved'); await loadRefs(); renderSites(); });
-  $('sitesList').querySelectorAll('[data-savelive]').forEach(b => b.onclick = async () => { const id = b.dataset.savelive, upd = {};
-    $('sitesList').querySelectorAll(`[data-ls="${id}"]`).forEach(i => upd[i.dataset.l] = i.dataset.l === 'blink_check' ? i.value === 'true' : Math.max(i.dataset.l === 'photo_days' ? 1 : 0, Math.round(+i.value || 0)));
-    const before = siteById(id); const { error } = await sb.from('sites').update(upd).eq('id', id);
-    if (error){ toast(/column/.test(error.message) ? 'Run schema_patch_liveness.sql in Supabase first — ' + error.message : error.message, 7000); return; }
-    await audit('site_photo_settings', id, before, upd, 'photo / head-turn settings saved'); toast('Saved — tablets pick it up within a minute'); await loadRefs(); renderSites(); });
   $('sitesList').querySelectorAll('[data-saveform]').forEach(b => b.onclick = async () => { const id = b.dataset.saveform, upd = {};
     $('sitesList').querySelectorAll(`[data-fs="${id}"]`).forEach(i => upd[i.dataset.f] = i.value.trim() || null);
     if (upd.hc_tag_sheets && !/^\d+(\s*,\s*\d+)*$/.test(upd.hc_tag_sheets)){ toast('Tag sheets must be sheet ID numbers separated by commas.'); return; }
@@ -1139,10 +1123,10 @@ async function loadHeadcount(){
     const sorter = (a, b) => grp(a).localeCompare(grp(b)) || a.e.name.localeCompare(b.e.name);
     on.sort(sorter); gone.sort(sorter);
     const dev = new Map(); punches.forEach(p => { if (p.device_id) dev.set(p.device_id, p.ts); });
-    HC = { site, at: now, on, gone, dev, today: hcTodayCount(allPunches, emps, site, today), tags: null };
+    HC = { site, at: now, on, gone, dev, today: hcTodayCount(allPunches, emps, site, today), tags: null, talk: null };
     $('hcTo').value = lsGet('hcTo:' + site.id);
     renderHeadcount();
-    hcCheckTags(HC);
+    hcCheckTags(HC); hcLoadTalk(HC);
   } catch (e) { toast(e.message, 7000); }
   finally { $('hcLoad').disabled = false; }
 }
@@ -1179,12 +1163,20 @@ async function hcCheckTags(h){
   } catch (e) { h.tags = { failed: e.message || String(e) }; }
   if (HC === h) hcRenderToday();
 }
-const HCF = { date: 'Date', site: 'Site', company: 'Company', name: 'Name', scope: 'Scope', mgmt: 'Management headcount?', labor: 'Labor headcount?', mm: 'New missing material identified?', rfi: 'Do you have a new Request for Information (RFI)?' };
+// today's toolbox talk, picked on safety.html (schema_patch_safety.sql)
+async function hcLoadTalk(h){
+  const { data, error } = await sb.from('safety_talks').select('title,given_by,topic_id').eq('site_id', h.site.id).eq('talk_date', h.today.date).maybeSingle();
+  h.talk = error ? { failed: /safety_talks/.test(error.message) ? 'run schema_patch_safety.sql' : error.message } : (data || { none: true });
+  if (HC === h) hcRenderToday();
+}
+const HCF = { safety: "Today's safety topic", date: 'Date', site: 'Site', company: 'Company', name: 'Name', scope: 'Scope', mgmt: 'Management headcount?', labor: 'Labor headcount?', mm: 'New missing material identified?', rfi: 'Do you have a new Request for Information (RFI)?' };
+const hcEnc = s => encodeURIComponent(s).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase());   // Smartsheet prefill: apostrophe in "Today's safety topic" must be %27
 function hcFormUrl(){
   const { site, today, tags } = HC, base = String(site.hc_form_url || '').trim(); if (!base) return '';
   const q = [[HCF.date, today.date], [HCF.site, site.hc_form_site], [HCF.company, site.hc_form_company], [HCF.name, me.display_name], [HCF.scope, site.hc_form_scope], [HCF.mgmt, today.mgmt.length], [HCF.labor, today.labor.length]];
+  if (HC.talk && HC.talk.title) q.push([HCF.safety, HC.talk.title]);
   if (tags && tags.ok){ q.push([HCF.mm, tags.missing_material ? 'Yes' : 'No'], [HCF.rfi, tags.rfi ? 'Yes' : 'No']); }
-  const qs = q.filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== '').map(([k, v]) => encodeURIComponent(k) + '=' + encodeURIComponent(String(v).trim())).join('&');
+  const qs = q.filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== '').map(([k, v]) => hcEnc(k) + '=' + hcEnc(String(v).trim())).join('&');
   return base + (base.includes('?') ? '&' : '?') + qs;
 }
 function hcRenderToday(){
@@ -1194,14 +1186,21 @@ function hcRenderToday(){
   if (tags && tags.ok) tagBoxes = `<div>${yn(tags.missing_material, 'new missing material' + (tags.missing_material ? ' (' + tags.counts.missing_material + ')' : ''))}</div><div>${yn(tags.rfi, 'new RFI' + (tags.rfi ? ' (' + tags.counts.rfi + ')' : ''))}</div>`;
   else if (tags && tags.loading) tagBoxes = `<div><b>…</b><span>checking tag sheets</span></div>`;
   $('hcTodayTitle').textContent = `Today — ${new Date(Rules.zoned(today.date, '12:00', tz)).toLocaleDateString('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric' })}`;
-  $('hcTodayKpi').innerHTML = `<div><b>${today.mgmt.length + today.labor.length}</b><span>on site today</span></div><div><b>${today.mgmt.length}</b><span>management${today.mgmt.length ? ': ' + esc(today.mgmt.map(e => e.name.split(' ')[0]).join(', ')) : ''}</span></div><div><b>${today.labor.length}</b><span>labor</span></div>` + tagBoxes;
+  $('hcTodayKpi').innerHTML = `<div><b>${today.mgmt.length + today.labor.length}</b><span>on site today</span></div><div><b>${today.mgmt.length}</b><span>management${today.mgmt.length ? ': ' + esc(today.mgmt.map(e => e.name.split(' ')[0]).join(', ')) : ''}</span></div><div><b>${today.labor.length}</b><span>labor</span></div>` + tagBoxes + hcTalkBox();
   const url = hcFormUrl(), msgs = [];
   if (!url) msgs.push('Set the customer form link for this site on the Sites tab.');
   if (tags && tags.failed) msgs.push('Tag check failed (' + tags.failed + ') — the two tag questions are left blank; answer them on the form.');
   if (tags && tags.off && url) msgs.push('No tag sheets set for this site — answer missing material and RFI on the form.');
+  if (HC.talk && HC.talk.none) msgs.push('No safety topic saved for today yet — pick it on the Daily Safety Topics page (safety.html), then Refresh, or type it on the form.');
+  if (HC.talk && HC.talk.failed) msgs.push('Safety topic not loaded (' + HC.talk.failed + ').');
   if (tags && tags.loading) msgs.push('Checking tags… the button works now, but wait a moment if you want those two answers filled in.');
   $('hcFormMsg').textContent = msgs.join(' ');
   $('hcForm').disabled = !url;
+}
+function hcTalkBox(){
+  const t = HC.talk; if (!t || t.failed) return '';
+  if (t.none) return `<div><b>—</b><span>safety topic: <a href="safety.html" target="_blank" rel="noopener">pick it</a></span></div>`;
+  return `<div style="flex:2 1 260px"><b style="font-size:16px">${esc(t.title)}</b><span>safety topic${t.given_by ? ' · ' + esc(t.given_by) : ''}</span></div>`;
 }
 $('hcForm').onclick = () => { const url = hcFormUrl(); if (url) window.open(url, '_blank', 'noopener'); };
 function hcWhen(d, tz){ return new Date(d).toLocaleString('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }); }
@@ -1451,9 +1450,9 @@ function renderAudit(){
 async function renderUsers(){
   sb.rpc('employee_companies').then(({ data }) => { $('uCoList').innerHTML = [...new Set((data || []).map(x => x.company).filter(Boolean).map(c => c.trim()))].sort().map(c => `<option value="${esc(c)}">`).join(''); });
   const { data, error } = await sb.from('profiles').select('*').order('role').order('display_name'); if (error){ toast(error.message); return; }
-  $('userTable').innerHTML = `<tr><th>Name</th><th>Role</th><th>Sites</th><th>Kiosk PIN</th><th>Status</th><th></th></tr>` + data.map(u => `<tr><td><b>${esc(u.display_name)}</b>${u.device_id ? '<br><span class="note">' + esc(u.device_id) + '</span>' : ''}</td><td>${u.role}</td><td>${u.role === 'foreman' ? 'only ' + esc(u.company || '?') + ' subs, any site' : (u.site_ids||[]).map(id => esc((siteById(id)||{}).name || '?')).join(', ') || (u.role === 'admin' ? 'all' : '—')}</td><td>${u.role === 'device' || u.role === 'foreman' ? '' : (u.pin_hash ? '<span class="badge ok">set</span>' : '<span class="badge">none</span>')}</td><td>${u.active ? 'active' : 'disabled'}</td><td style="white-space:nowrap"><button class="btn sm ghost" data-ue="${u.user_id}">Edit</button> ${u.role === 'foreman' ? '' : `<button class="btn sm ghost" data-us="${u.user_id}">Sites</button>`} <button class="btn sm ghost" data-upw="${u.user_id}">Password</button> ${u.role !== 'device' && u.role !== 'foreman' ? `<button class="btn sm ghost" data-up="${u.user_id}">PIN</button>` : ''} <button class="btn sm ghost" data-ut="${u.user_id}">${u.active ? 'Disable' : 'Enable'}</button> ${u.user_id !== me.user_id ? `<button class="btn sm ghost" data-ud="${u.user_id}" style="color:var(--miss)">Delete</button>` : ''}</td></tr>`).join('');
+  $('userTable').innerHTML = `<tr><th>Name</th><th>Role</th><th>Sites</th><th>Kiosk PIN</th><th>Status</th><th></th></tr>` + data.map(u => `<tr><td><b>${esc(u.display_name)}</b>${u.device_id ? '<br><span class="note">' + esc(u.device_id) + '</span>' : ''}</td><td>${u.role}</td><td>${u.role === 'foreman' ? 'only ' + esc(u.company || '?') + ' subs, any site' : (u.site_ids||[]).map(id => esc((siteById(id)||{}).name || '?')).join(', ') || (u.role === 'admin' ? 'all' : '—')}</td><td>${u.role === 'device' || u.role === 'foreman' || u.role === 'safety' ? '' : (u.pin_hash ? '<span class="badge ok">set</span>' : '<span class="badge">none</span>')}</td><td>${u.active ? 'active' : 'disabled'}</td><td style="white-space:nowrap"><button class="btn sm ghost" data-ue="${u.user_id}">Edit</button> ${u.role === 'foreman' ? '' : `<button class="btn sm ghost" data-us="${u.user_id}">Sites</button>`} <button class="btn sm ghost" data-upw="${u.user_id}">Password</button> ${u.role !== 'device' && u.role !== 'foreman' && u.role !== 'safety' ? `<button class="btn sm ghost" data-up="${u.user_id}">PIN</button>` : ''} <button class="btn sm ghost" data-ut="${u.user_id}">${u.active ? 'Disable' : 'Enable'}</button> ${u.user_id !== me.user_id ? `<button class="btn sm ghost" data-ud="${u.user_id}" style="color:var(--miss)">Delete</button>` : ''}</td></tr>`).join('');
   $('userTable').querySelectorAll('[data-ue]').forEach(b => b.onclick = async () => { const u = data.find(x => x.user_id === b.dataset.ue);
-    await modal('Edit ' + u.display_name, `<div class="row"><label class="f">Display name<input type="text" data-n value="${esc(u.display_name)}"></label><label class="f">Role<select data-r><option value="supervisor" ${u.role==='supervisor'?'selected':''}>Supervisor</option><option value="admin" ${u.role==='admin'?'selected':''}>Admin</option><option value="device" ${u.role==='device'?'selected':''}>Tablet</option><option value="foreman" ${u.role==='foreman'?'selected':''}>Sub foreman</option></select></label><label class="f">Sub company (foreman only)<input type="text" data-co list="uCoList" value="${esc(u.company || '')}"></label></div><div class="note">A sub foreman sees and edits only that company's subs, at any site — the company must match the Company on those employees. To change someone's password, use the Password button in their row.</div>`, async m => {
+    await modal('Edit ' + u.display_name, `<div class="row"><label class="f">Display name<input type="text" data-n value="${esc(u.display_name)}"></label><label class="f">Role<select data-r><option value="supervisor" ${u.role==='supervisor'?'selected':''}>Supervisor</option><option value="admin" ${u.role==='admin'?'selected':''}>Admin</option><option value="device" ${u.role==='device'?'selected':''}>Tablet</option><option value="foreman" ${u.role==='foreman'?'selected':''}>Sub foreman</option><option value="safety" ${u.role==='safety'?'selected':''}>Site safety</option></select></label><label class="f">Sub company (foreman only)<input type="text" data-co list="uCoList" value="${esc(u.company || '')}"></label></div><div class="note">A sub foreman sees and edits only that company's subs, at any site — the company must match the Company on those employees. To change someone's password, use the Password button in their row.</div>`, async m => {
       const upd = { display_name: m.querySelector('[data-n]').value.trim(), role: m.querySelector('[data-r]').value }; upd.company = upd.role === 'foreman' ? m.querySelector('[data-co]').value.trim() : null; if (upd.role === 'foreman' && !upd.company) throw new Error('Pick the sub company this foreman runs.'); if (!upd.display_name) throw new Error('Name is required.'); if (u.user_id === me.user_id && upd.role !== 'admin') throw new Error("You can't remove your own admin role.");
       const { error } = await sb.from('profiles').update(upd).eq('user_id', u.user_id); if (error) throw new Error(error.message); await audit('user_edited', u.user_id, {display_name: u.display_name, role: u.role, company: u.company || null}, upd, ''); renderUsers(); }); });
   $('userTable').querySelectorAll('[data-ud]').forEach(b => b.onclick = async () => { const u = data.find(x => x.user_id === b.dataset.ud);
@@ -1482,7 +1481,7 @@ $('uAdd').onclick = async () => {
   if (!data.user){ $('uMsg').textContent = 'Account not returned — check that "Confirm email" is turned off in Supabase Authentication settings.'; return; }
   const prof = { user_id: data.user.id, display_name: name, role, site_ids: (role === 'admin' || role === 'foreman') ? [] : site_ids, device_id: role === 'device' ? email.split('@')[0] : null }; if (role === 'foreman') prof.company = company;
   const { error: e2 } = await sb.from('profiles').insert(prof); if (e2){ $('uMsg').textContent = 'Login created but profile failed: ' + e2.message; return; }
-  if (pin && role !== 'device' && role !== 'foreman'){ const { error: e3 } = await sb.rpc('set_pin', { p_user: data.user.id, p_pin: pin }); if (e3){ $('uMsg').textContent = 'User created; PIN failed: ' + e3.message; } }
+  if (pin && role !== 'device' && role !== 'foreman' && role !== 'safety'){ const { error: e3 } = await sb.rpc('set_pin', { p_user: data.user.id, p_pin: pin }); if (e3){ $('uMsg').textContent = 'User created; PIN failed: ' + e3.message; } }
   await audit('user_created', data.user.id, null, prof, ''); $('uMsg').textContent = name + ' created.'; ['uName','uEmail','uPass','uPin','uCo'].forEach(id => $(id).value = ''); renderUsers();
 };
 
