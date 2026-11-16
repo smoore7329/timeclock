@@ -253,23 +253,29 @@ let lastFrameAt = Date.now(), frameSeq = 0, procSeq = -1, lastDesc = null, sameD
 const bootAt = Date.now();
 const recentPunch = new Map();   // employee id -> time until which the face path ignores them (after a punch)
 const PUNCH_COOLDOWN_MS = 60000, STALL_MS = 4000;
-let currentDist = null, currentSnap = null, currentRetry = false, live = null;   // face match distance + snapshot for the person on screen; live = head-turn check in progress
+let currentDist = null, currentSnap = null, currentRetry = false, currentDesc = null, live = null;   // face match distance + snapshot for the person on screen; live = head-turn check in progress
 
 const empById = id => employees.find(e => e.id === id);
 const schedOf = e => schedules.find(s => s.id === e.schedule_id) || schedules[0] || {name:'—', start_time:'', end_time:''};
-function buildMatcher(){ const labeled = employees.filter(e => e.active && e.face_descs && e.face_descs.length).map(e => new faceapi.LabeledFaceDescriptors(e.id, e.face_descs.map(d => new Float32Array(d)))); matcher = labeled.length ? new faceapi.FaceMatcher(labeled, 0.5) : null; }
+function buildMatcher(){ const labeled = employees.filter(e => e.active && e.face_descs && e.face_descs.length).map(e => new faceapi.LabeledFaceDescriptors(e.id, e.face_descs.concat(Array.isArray(e.face_learned) ? e.face_learned : []).map(d => new Float32Array(d)))); matcher = labeled.length ? new faceapi.FaceMatcher(labeled, 0.5) : null; }
 const setSync = () => { const el = $('footInfo'); const d = new Date(); el.innerHTML = `<span class="sync ${!navigator.onLine ? 'off' : syncErr ? 'err' : ''}"></span>` + d.toLocaleDateString(undefined, {weekday:'short', month:'short', day:'numeric'}) + (!navigator.onLine ? ' · offline, punches saved here / sin conexión, las marcas se guardan aquí' : syncErr ? ' · sync problem / problema de sincronización' : ''); };
 
 // ================= sync =================
+const EMP_COLS = 'id,code,name,pay_type,active,site_id,schedule_id,face_descs';
+let learnCol = true;
 async function pull(){
   if (!navigator.onLine) return;
   try {
     const { data: sites, error: e1 } = await sb.from('sites').select('*').in('id', me.site_ids); if (e1) throw e1;
     site = sites[0] || site; if (site) $('siteName').textContent = site.name;
     const { data: sch, error: e2 } = await sb.from('schedules').select('*').eq('site_id', site.id); if (e2) throw e2; schedules = sch;
-    const { data: emps, error: e3 } = await sb.from('employees').select('id,code,name,pay_type,active,site_id,schedule_id,face_descs').eq('site_id', site.id); if (e3) throw e3;
+    // face_learned = samples the tablets add on their own (schema_patch_learning.sql); without the column, carry on without them
+    let cols = EMP_COLS + (learnCol ? ',face_learned' : '');
+    let { data: emps, error: e3 } = await sb.from('employees').select(cols).eq('site_id', site.id);
+    if (e3 && learnCol && /face_learned/.test(e3.message)){ learnCol = false; cols = EMP_COLS; ({ data: emps, error: e3 } = await sb.from('employees').select(cols).eq('site_id', site.id)); }
+    if (e3) throw e3;
     // salaried staff can punch (for the headcount only) at any site's tablet; needs schema_patch12.sql, else only this site's salaried show up
-    const { data: sal } = await sb.from('employees').select('id,code,name,pay_type,active,site_id,schedule_id,face_descs').eq('pay_type', 'salary').eq('active', true);
+    const { data: sal } = await sb.from('employees').select(cols).eq('pay_type', 'salary').eq('active', true);
     const seen = new Set(emps.map(e => e.id)); (sal || []).forEach(e => { if (!seen.has(e.id)) emps.push(e); });
     employees = emps; await DB.clear('employees'); await DB.putAll('employees', employees); buildMatcher();
     const since = new Date(Date.now() - 36*3600e3).toISOString();
@@ -357,17 +363,34 @@ async function punch(type){
   const photo = currentMethod === 'fallback' && window._fallbackPhoto ? window._fallbackPhoto : (currentSnap || takeSnap()); window._fallbackPhoto = null;
   if (photo){ if (rec.flag) rec.photo = photo; else rec.snap = photo; }   // flagged: photo goes with the punch to the review queue
   recentPunch.set(current.id, Date.now() + PUNCH_COOLDOWN_MS); lastActivity = Date.now();
-  punches.push(rec); await DB.put('punches', rec); showDone(current, type, rec); push();
+  const learnFrom = currentMethod === 'face' && currentDesc && !currentRetry && currentDist != null && currentDist <= WEAK_MATCH ? currentDesc : null;
+  const who = current; punches.push(rec); await DB.put('punches', rec); showDone(current, type, rec); push();
+  if (learnFrom) learnFace(who, learnFrom);
+}
+// ---- learning: after a solid match that passed the head-turn check, keep that face capture as an extra sample
+// so each person's signature adapts to this door's lighting, hard hats, etc. Enrolled samples are never changed;
+// up to LEARN_MAX learned samples per person (oldest dropped), at most one per person every LEARN_GAP_MS per tablet.
+const LEARN_MAX = 10, LEARN_GAP_MS = 4 * 3600e3, lastLearn = new Map();
+async function learnFace(emp, desc){
+  try {
+    if (!learnCol || !navigator.onLine || !emp || !(emp.face_descs && emp.face_descs.length)) return;
+    if (Date.now() - (lastLearn.get(emp.id) || 0) < LEARN_GAP_MS) return;
+    const d = Array.from(desc).map(x => Math.round(x * 1e5) / 1e5);
+    const learned = (Array.isArray(emp.face_learned) ? emp.face_learned : []).concat([d]).slice(-LEARN_MAX);
+    const { error } = await sb.from('employees').update({ face_learned: learned }).eq('id', emp.id);
+    if (error){ if (/face_learned/.test(error.message)) learnCol = false; console.warn('learn', error.message); return; }
+    lastLearn.set(emp.id, Date.now()); emp.face_learned = learned; await DB.put('employees', emp); buildMatcher();
+  } catch (e) { console.warn('learn', e); }
 }
 function showDone(emp, type, rec){
   recognizing = false; $('who').className = 'who done'; $('whoName').textContent = emp.name;
   const t = fmtT(rec.ts);
   $('whoSub').innerHTML = (type === 'in' ? 'Punched <b>IN</b> at ' + t + '<br>' + ES('Entrada marcada a las ' + t) : 'Punched <b>OUT</b> at ' + t + '<br>' + ES('Salida marcada a las ' + t)) + (rec.flag && !/^random spot-check$/.test(rec.flag) ? '<br><span style="color:var(--warn)">Flagged for supervisor review / ' + ES('Marcado para revisión del supervisor') + '</span>' : '');
   $('btnIn').classList.add('hidden'); $('btnOut').classList.add('hidden'); $('btnNotMe').classList.add('hidden'); $('btnClear').classList.add('hidden'); { const f = esc(emp.name.split(' ')[0]); setStatus('Thanks, ' + f, 'Gracias, ' + f); }
-  setTimeout(resetKiosk, 2500);
+  setTimeout(resetKiosk, 1500);
 }
 function resetKiosk(){
-  live = null; currentDist = null; currentSnap = null; currentRetry = false; $('turnArrow').classList.add('hidden');
+  live = null; currentDist = null; currentSnap = null; currentRetry = false; currentDesc = null; $('turnArrow').classList.add('hidden');
   current = null; currentMethod = 'face'; stable = {id:null,n:0}; recognizing = true; $('who').className = 'who';
   $('whoName').innerHTML = 'Waiting…' + ES('Esperando…'); $('whoSub').innerHTML = 'Look at the camera to punch<br>' + ES('Mire a la cámara para marcar');
   $('btnIn').classList.add('hidden'); $('btnOut').classList.add('hidden'); $('btnNotMe').classList.remove('hidden'); $('btnClear').classList.add('hidden'); setStatus('Step up to the camera', 'Acérquese a la cámara');
@@ -426,7 +449,7 @@ function showArrow(dir, note){
 }
 const hideArrow = () => $('turnArrow').classList.add('hidden');
 function startLive(emp, dist){
-  if (stateFor(emp).next === 'locked' || !checkOn()){ currentDist = dist; currentSnap = null; currentRetry = false; showEmployee(emp, 'face'); return; }
+  if (stateFor(emp).next === 'locked' || !checkOn()){ currentDist = dist; currentSnap = null; currentRetry = false; currentDesc = null; showEmployee(emp, 'face'); return; }
   live = Object.assign(newTurn(), { emp, dist, t0: Date.now(), hinted: false, T: newTracker() });
   showEmployee(emp, 'face', true);
 }
@@ -459,7 +482,7 @@ async function liveStep(v, ctx){
     if (live !== L) return;
     const m = chk && matcher ? matcher.findBestMatch(chk.descriptor) : null;
     if (!m || m.label !== L.emp.id){ L.phase = 'back'; return; }
-    hideArrow(); currentDist = Math.max(L.dist, m.distance); currentSnap = takeSnap(); currentRetry = L.retries > 0; live = null; showEmployee(L.emp, 'face'); return;
+    hideArrow(); currentDist = Math.max(L.dist, m.distance); currentSnap = takeSnap(); currentRetry = L.retries > 0; currentDesc = chk.descriptor; live = null; showEmployee(L.emp, 'face'); return;
   }
   if (!L.hinted && now - L.t0 > TURN_HINT_MS){ L.hinted = true; $('whoSub').innerHTML = 'Turn your head further the way the arrow points, then look back.<br>Still stuck? Pick your name.<br>' + ES('Gire más la cabeza hacia la flecha y luego mire la pantalla. ¿Sigue sin funcionar? Elija su nombre.'); }
 }
@@ -494,7 +517,7 @@ async function loop(){
 
 // ================= fallback =================
 // a manual pick cancels any head-turn check in progress; otherwise the Punch button is silently ignored
-function cancelLive(){ live = null; currentDist = null; currentSnap = null; currentRetry = false; hideArrow(); clearTimeout(idleTimer); }
+function cancelLive(){ live = null; currentDist = null; currentSnap = null; currentRetry = false; currentDesc = null; hideArrow(); clearTimeout(idleTimer); }
 $('btnNotMe').onclick = () => { cancelLive(); renderPick(''); $('pickSearch').value = ''; $('pick').classList.remove('hidden'); $('pickSearch').focus(); };
 $('pickClose').onclick = () => $('pick').classList.add('hidden');
 $('pickSearch').oninput = e => renderPick(e.target.value);
@@ -552,9 +575,10 @@ $('btnCapture').onclick = async () => {
   }
   if (descs.length < 6){ $('enMsg').textContent = `Only ${descs.length} clear shots. Move closer, face the camera, try again.`; }
   else {
-    const { error } = await sb.from('employees').update({ face_descs: descs, consent_at: new Date().toISOString() }).eq('id', emp.id);
+    let { error } = await sb.from('employees').update(Object.assign({ face_descs: descs, consent_at: new Date().toISOString() }, learnCol ? { face_learned: null } : {})).eq('id', emp.id);
+    if (error && learnCol && /face_learned/.test(error.message)){ learnCol = false; ({ error } = await sb.from('employees').update({ face_descs: descs, consent_at: new Date().toISOString() }).eq('id', emp.id)); }
     if (error){ $('enMsg').textContent = 'Could not save: ' + error.message; }
-    else { emp.face_descs = descs; await DB.put('employees', emp); buildMatcher(); audit('enroll', emp.id, {shots: descs.length, by: supUser.user_id}); $('enMsg').textContent = emp.name + ' enrolled with ' + descs.length + ' shots.'; $('consent').checked = false; renderEnrollSelect(); }
+    else { emp.face_descs = descs; emp.face_learned = null; await DB.put('employees', emp); buildMatcher(); audit('enroll', emp.id, {shots: descs.length, by: supUser.user_id}); $('enMsg').textContent = emp.name + ' enrolled with ' + descs.length + ' shots.'; $('consent').checked = false; renderEnrollSelect(); }
   }
   $('btnCapture').disabled = false;
 };
@@ -567,9 +591,10 @@ $('btnRemoveFace').onclick = async () => {
   if (!navigator.onLine){ $('enMsg').textContent = 'Removing face data needs a connection so it is deleted from every tablet.'; return; }
   if (!removeArm){ $('btnRemoveFace').textContent = 'Tap again to remove ' + emp.name + "'s face data"; removeArm = setTimeout(disarmRemove, 5000); return; }
   disarmRemove(); $('btnRemoveFace').disabled = true;
-  const { error } = await sb.from('employees').update({ face_descs: null, consent_at: null }).eq('id', emp.id);
+  let { error } = await sb.from('employees').update(Object.assign({ face_descs: null, consent_at: null }, learnCol ? { face_learned: null } : {})).eq('id', emp.id);
+  if (error && learnCol && /face_learned/.test(error.message)){ learnCol = false; ({ error } = await sb.from('employees').update({ face_descs: null, consent_at: null }).eq('id', emp.id)); }
   if (error){ $('enMsg').textContent = 'Could not remove: ' + error.message; }
-  else { emp.face_descs = null; await DB.put('employees', emp); buildMatcher(); audit('face_removed', emp.id, {by: supUser.user_id}); $('enMsg').textContent = emp.name + "'s face data was removed."; renderEnrollSelect(); }
+  else { emp.face_descs = null; emp.face_learned = null; await DB.put('employees', emp); buildMatcher(); audit('face_removed', emp.id, {by: supUser.user_id}); $('enMsg').textContent = emp.name + "'s face data was removed."; renderEnrollSelect(); }
   $('btnRemoveFace').disabled = false;
 };
 function renderRoster(){
