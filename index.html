@@ -84,6 +84,25 @@
   #turnArrow .txt{font-size:26px;font-weight:800;line-height:1.3;text-align:center;background:rgba(0,0,0,.6);padding:10px 18px;border-radius:12px}
   #turnArrow .txt small{display:block;font-size:20px;font-weight:600;color:#d7e3ee}
   #connect .body{max-width:480px;margin:0 auto;width:100%;justify-content:center}
+  /* compact layout so every button fits on the 8" tablets (portrait, or any short screen) */
+  @media (orientation:portrait){
+    #kiosk{grid-template-rows:minmax(0,40vh) minmax(0,1fr)}
+    .camWrap{padding:10px 10px 4px}
+    .side{padding:8px 10px 6px;gap:8px;overflow-y:auto}
+    .who{padding:10px 14px;min-height:0;border-left-width:8px;border-radius:12px}
+    .who .name{font-size:26px} .who .sub{font-size:15px;margin-top:4px} .who .big{font-size:38px}
+    .acts{gap:8px}
+    .act{padding:12px 10px;font-size:22px;border-radius:12px} .act.ghost{padding:8px 10px;font-size:16px}
+    .cam .site{padding:8px 12px;font-size:15px} .cam .site span:last-child{font-size:20px}
+    .cam .status{padding:8px 12px;font-size:15px}
+    #turnArrow .arr{font-size:min(18vh,140px)} #turnArrow .txt{font-size:20px;padding:6px 12px} #turnArrow .txt small{font-size:16px}
+    .foot{font-size:12px} #logo{padding:4px}
+  }
+  @media (orientation:landscape) and (max-height:700px){
+    .camWrap{padding:12px} .side{padding:10px;gap:8px;overflow-y:auto}
+    .who{padding:12px 14px;min-height:0} .who .name{font-size:28px} .who .sub{font-size:15px} .who .big{font-size:40px}
+    .act{padding:14px 10px;font-size:22px} .act.ghost{padding:8px 10px;font-size:16px}
+  }
   /* Spanish line under each English line on employee screens */
   .es{display:block;font-size:.8em;font-weight:600;font-style:italic;opacity:.82;margin-top:3px}
   .who .name .es{font-size:.5em} .act .es{font-size:.62em;font-style:normal} .act.ghost .es{font-size:.85em} .sheet h2 .es{font-size:.7em}
