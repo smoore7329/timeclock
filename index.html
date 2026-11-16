@@ -84,10 +84,14 @@
   #turnArrow .txt{font-size:26px;font-weight:800;line-height:1.3;text-align:center;background:rgba(0,0,0,.6);padding:10px 18px;border-radius:12px}
   #turnArrow .txt small{display:block;font-size:20px;font-weight:600;color:#d7e3ee}
   #connect .body{max-width:480px;margin:0 auto;width:100%;justify-content:center}
+  /* Spanish line under each English line on employee screens */
+  .es{display:block;font-size:.8em;font-weight:600;font-style:italic;opacity:.82;margin-top:3px}
+  .who .name .es{font-size:.5em} .act .es{font-size:.62em;font-style:normal} .act.ghost .es{font-size:.85em} .sheet h2 .es{font-size:.7em}
+  .who .sub .es{display:inline;margin:0;font-size:.92em} .status .es{display:inline;margin-left:4px;font-size:.92em}
 </style>
 </head>
 <body>
-<div id="loading"><div id="lmsg">Loading time clock</div><div class="bar"><i id="lbar"></i></div><div class="note" id="lsub">Recognition runs on this tablet.</div></div>
+<div id="loading"><div id="lmsg">Loading time clock<span class="es">Cargando el reloj</span></div><div class="bar"><i id="lbar"></i></div><div class="note" id="lsub">Recognition runs on this tablet.</div></div>
 
 <!-- ============ CONNECT THIS TABLET (first run) ============ -->
 <div id="connect" class="sheet hidden">
@@ -108,15 +112,15 @@
     <canvas id="overlay"></canvas>
     <div id="turnArrow" class="hidden"><div class="arr" id="taArr"></div><div class="txt" id="taTxt"></div></div>
     <div class="site"><span id="siteName">Time Clock</span><span id="clock">--:--</span></div>
-    <div class="status" id="status">Step up to the camera</div>
+    <div class="status" id="status">Step up to the camera / <span class="es">Acérquese a la cámara</span></div>
   </div></div>
   <div class="side">
-    <div class="who" id="who"><div class="name" id="whoName">Waiting…</div><div class="sub" id="whoSub">Look at the camera to punch</div></div>
+    <div class="who" id="who"><div class="name" id="whoName">Waiting…<span class="es">Esperando…</span></div><div class="sub" id="whoSub">Look at the camera to punch<br><span class="es">Mire a la cámara para marcar</span></div></div>
     <div class="acts" id="acts">
-      <button class="act in hidden" id="btnIn">Punch In</button>
-      <button class="act out hidden" id="btnOut">Punch Out</button>
-      <button class="act ghost" id="btnNotMe">Not recognized? Pick your name</button>
-      <button class="act ghost hidden" id="btnClear">Done — next person</button>
+      <button class="act in hidden" id="btnIn">Punch In<span class="es">Marcar entrada</span></button>
+      <button class="act out hidden" id="btnOut">Punch Out<span class="es">Marcar salida</span></button>
+      <button class="act ghost" id="btnNotMe">Not recognized? Pick your name<span class="es">¿No lo reconoce? Elija su nombre</span></button>
+      <button class="act ghost hidden" id="btnClear">Done — next person<span class="es">Listo — siguiente persona</span></button>
     </div>
     <div class="spacer"></div>
     <div class="foot"><span id="footInfo"></span><button id="logo" style="background:none;border:0">AIME · Time Clock</button></div>
@@ -125,8 +129,8 @@
 
 <!-- ============ PICK NAME ============ -->
 <div id="pick" class="sheet hidden">
-  <header><h2>Pick your name</h2><button class="sm" id="pickClose">Cancel</button></header>
-  <input type="text" id="pickSearch" placeholder="Type a few letters of your name" autocomplete="off">
+  <header><h2>Pick your name<span class="es">Elija su nombre</span></h2><button class="sm" id="pickClose">Cancel / Cancelar</button></header>
+  <input type="text" id="pickSearch" placeholder="Type a few letters of your name / Escriba unas letras de su nombre" autocomplete="off">
   <div class="body"><div class="list" id="pickList"></div></div>
 </div>
 
@@ -215,6 +219,10 @@ const $ = id => document.getElementById(id);
 const pad = n => String(n).padStart(2, '0');
 const fmtT = d => { d = new Date(d); let h = d.getHours(), m = pad(d.getMinutes()); const ap = h >= 12 ? 'PM' : 'AM'; h = h % 12 || 12; return `${h}:${m} ${ap}`; };
 const dayKey = d => { d = new Date(d); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; };
+const esc = x => String(x == null ? '' : x).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+// employee screens: English, then Spanish
+const ES = t => '<span class="es">' + t + '</span>';
+const setStatus = (en, es) => { $('status').innerHTML = en + ' / ' + ES(es); };
 const toast = (msg, ms=2500) => { const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), ms); };
 
 // ================= state =================
@@ -231,7 +239,7 @@ let currentDist = null, currentSnap = null, currentRetry = false, live = null;  
 const empById = id => employees.find(e => e.id === id);
 const schedOf = e => schedules.find(s => s.id === e.schedule_id) || schedules[0] || {name:'—', start_time:'', end_time:''};
 function buildMatcher(){ const labeled = employees.filter(e => e.active && e.face_descs && e.face_descs.length).map(e => new faceapi.LabeledFaceDescriptors(e.id, e.face_descs.map(d => new Float32Array(d)))); matcher = labeled.length ? new faceapi.FaceMatcher(labeled, 0.5) : null; }
-const setSync = () => { const el = $('footInfo'); const d = new Date(); el.innerHTML = `<span class="sync ${!navigator.onLine ? 'off' : syncErr ? 'err' : ''}"></span>` + d.toLocaleDateString(undefined, {weekday:'short', month:'short', day:'numeric'}) + (!navigator.onLine ? ' · offline, punches saved here' : syncErr ? ' · sync problem' : ''); };
+const setSync = () => { const el = $('footInfo'); const d = new Date(); el.innerHTML = `<span class="sync ${!navigator.onLine ? 'off' : syncErr ? 'err' : ''}"></span>` + d.toLocaleDateString(undefined, {weekday:'short', month:'short', day:'numeric'}) + (!navigator.onLine ? ' · offline, punches saved here / sin conexión, las marcas se guardan aquí' : syncErr ? ' · sync problem / problema de sincronización' : ''); };
 
 // ================= sync =================
 async function pull(){
@@ -334,28 +342,32 @@ async function punch(type){
 }
 function showDone(emp, type, rec){
   recognizing = false; $('who').className = 'who done'; $('whoName').textContent = emp.name;
-  $('whoSub').innerHTML = (type === 'in' ? 'Punched <b>IN</b> at ' : 'Punched <b>OUT</b> at ') + fmtT(rec.ts) + (rec.flag && !/^random spot-check$/.test(rec.flag) ? '<br><span style="color:var(--warn)">Flagged for supervisor review</span>' : '');
-  $('btnIn').classList.add('hidden'); $('btnOut').classList.add('hidden'); $('btnNotMe').classList.add('hidden'); $('btnClear').classList.add('hidden'); $('status').textContent = 'Thanks, ' + emp.name.split(' ')[0];
+  const t = fmtT(rec.ts);
+  $('whoSub').innerHTML = (type === 'in' ? 'Punched <b>IN</b> at ' + t + '<br>' + ES('Entrada marcada a las ' + t) : 'Punched <b>OUT</b> at ' + t + '<br>' + ES('Salida marcada a las ' + t)) + (rec.flag && !/^random spot-check$/.test(rec.flag) ? '<br><span style="color:var(--warn)">Flagged for supervisor review / ' + ES('Marcado para revisión del supervisor') + '</span>' : '');
+  $('btnIn').classList.add('hidden'); $('btnOut').classList.add('hidden'); $('btnNotMe').classList.add('hidden'); $('btnClear').classList.add('hidden'); { const f = esc(emp.name.split(' ')[0]); setStatus('Thanks, ' + f, 'Gracias, ' + f); }
   setTimeout(resetKiosk, 2500);
 }
 function resetKiosk(){
   live = null; currentDist = null; currentSnap = null; currentRetry = false; $('turnArrow').classList.add('hidden');
   current = null; currentMethod = 'face'; stable = {id:null,n:0}; recognizing = true; $('who').className = 'who';
-  $('whoName').textContent = 'Waiting…'; $('whoSub').textContent = 'Look at the camera to punch';
-  $('btnIn').classList.add('hidden'); $('btnOut').classList.add('hidden'); $('btnNotMe').classList.remove('hidden'); $('btnClear').classList.add('hidden'); $('status').textContent = 'Step up to the camera';
+  $('whoName').innerHTML = 'Waiting…' + ES('Esperando…'); $('whoSub').innerHTML = 'Look at the camera to punch<br>' + ES('Mire a la cámara para marcar');
+  $('btnIn').classList.add('hidden'); $('btnOut').classList.add('hidden'); $('btnNotMe').classList.remove('hidden'); $('btnClear').classList.add('hidden'); setStatus('Step up to the camera', 'Acérquese a la cámara');
 }
 function showEmployee(emp, method, pending){
   lastActivity = Date.now(); current = emp; currentMethod = method; const st = stateFor(emp); const w = $('who'); $('whoName').textContent = emp.name;
   if (pending){ w.className = 'who lock'; $('btnIn').classList.add('hidden'); $('btnOut').classList.add('hidden'); $('btnClear').classList.remove('hidden');
-    $('whoSub').innerHTML = 'Turn your head the way the <b>arrow</b> points, then look back'; $('status').textContent = 'Follow the arrow';
+    $('whoSub').innerHTML = 'Turn your head the way the <b>arrow</b> points, then look back<br>' + ES('Gire la cabeza hacia donde apunta la flecha y luego mire la pantalla'); setStatus('Follow the arrow', 'Siga la flecha');
     clearTimeout(idleTimer); idleTimer = setTimeout(() => { if (current === emp && live){ audit('turn_timeout', emp.id, {dist: live.dist, retries: live.retries}); resetKiosk(); } }, TURN_GIVEUP_MS); return; }
   $('btnIn').classList.toggle('hidden', st.next !== 'in'); $('btnOut').classList.toggle('hidden', st.next !== 'out'); $('btnClear').classList.remove('hidden');
-  const tail = method === 'fallback' ? ' · manual pick, photo will be reviewed' : '';
+  const fb = method === 'fallback';   // manual pick: the photo will be reviewed
   if (st.next === 'locked'){ w.className = 'who lock';
-    const tick = () => { if (current !== emp) return; const s = Math.max(0, Math.round((st.until - Date.now())/1000)); $('whoSub').innerHTML = `Punched out at ${fmtT(st.since.ts)}. You can punch back in at <b>${fmtT(st.until)}</b><br><span class="big">${Math.floor(s/60)}:${pad(s%60)}</span>`; if (s > 0) setTimeout(tick, 1000); else if (method === 'face' && checkOn()) resetKiosk(); else showEmployee(emp, method); }; tick();
-  } else if (st.next === 'out'){ w.className = 'who out'; $('whoSub').textContent = 'Punched in at ' + fmtT(st.since.ts) + tail; }
-  else if (isSalary(emp)){ w.className = 'who in'; $('whoSub').textContent = (st.since ? 'Last out ' + fmtT(st.since.ts) + ' · ' : '') + 'Salaried · punch in for the site headcount' + tail; }
-  else { w.className = 'who in'; const sc = schedOf(emp); $('whoSub').textContent = (st.since ? 'Last out ' + fmtT(st.since.ts) + ' · ' : '') + 'Schedule ' + sc.name + ' ' + String(sc.start_time).slice(0,5) + '–' + String(sc.end_time).slice(0,5) + tail; }
+    const tick = () => { if (current !== emp) return; const s = Math.max(0, Math.round((st.until - Date.now())/1000)); $('whoSub').innerHTML = `Punched out at ${fmtT(st.since.ts)}. You can punch back in at <b>${fmtT(st.until)}</b><br>${ES('Salió a las ' + fmtT(st.since.ts) + '. Puede volver a marcar entrada a las <b>' + fmtT(st.until) + '</b>')}<br><span class="big">${Math.floor(s/60)}:${pad(s%60)}</span>`; if (s > 0) setTimeout(tick, 1000); else if (method === 'face' && checkOn()) resetKiosk(); else showEmployee(emp, method); }; tick();
+  } else if (st.next === 'out'){ w.className = 'who out'; const t = fmtT(st.since.ts);
+    $('whoSub').innerHTML = 'Punched in at ' + t + (fb ? ' · manual pick, photo will be reviewed' : '') + '<br>' + ES('Entrada a las ' + t + (fb ? ' · selección manual, se revisará la foto' : '')); }
+  else if (isSalary(emp)){ w.className = 'who in'; const t = st.since ? fmtT(st.since.ts) : '';
+    $('whoSub').innerHTML = (t ? 'Last out ' + t + ' · ' : '') + 'Salaried · punch in for the site headcount' + (fb ? ' · manual pick, photo will be reviewed' : '') + '<br>' + ES((t ? 'Última salida ' + t + ' · ' : '') + 'Asalariado · marque entrada para el conteo del sitio' + (fb ? ' · selección manual, se revisará la foto' : '')); }
+  else { w.className = 'who in'; const sc = schedOf(emp), t = st.since ? fmtT(st.since.ts) : '', hrs = esc(sc.name) + ' ' + String(sc.start_time).slice(0,5) + '–' + String(sc.end_time).slice(0,5);
+    $('whoSub').innerHTML = (t ? 'Last out ' + t + ' · ' : '') + 'Schedule ' + hrs + (fb ? ' · manual pick, photo will be reviewed' : '') + '<br>' + ES((t ? 'Última salida ' + t + ' · ' : '') + 'Horario ' + hrs + (fb ? ' · selección manual, se revisará la foto' : '')); }
   $('status').textContent = emp.name;
   clearTimeout(idleTimer); idleTimer = setTimeout(() => { if (current === emp && recognizing) resetKiosk(); }, method === 'fallback' ? 30000 : (st.next === 'locked' ? 8000 : 12000));
 }
@@ -430,7 +442,7 @@ async function liveStep(v, ctx){
     if (!m || m.label !== L.emp.id){ L.phase = 'back'; return; }
     hideArrow(); currentDist = Math.max(L.dist, m.distance); currentSnap = takeSnap(); currentRetry = L.retries > 0; live = null; showEmployee(L.emp, 'face'); return;
   }
-  if (!L.hinted && now - L.t0 > TURN_HINT_MS){ L.hinted = true; $('whoSub').innerHTML = 'Turn your head further the way the arrow points, then look back.<br>Still stuck? Pick your name.'; }
+  if (!L.hinted && now - L.t0 > TURN_HINT_MS){ L.hinted = true; $('whoSub').innerHTML = 'Turn your head further the way the arrow points, then look back.<br>Still stuck? Pick your name.<br>' + ES('Gire más la cabeza hacia la flecha y luego mire la pantalla. ¿Sigue sin funcionar? Elija su nombre.'); }
 }
 async function loop(){
   const v = $('video'), c = $('overlay');
@@ -451,12 +463,12 @@ async function loop(){
       if (lastDesc && faceapi.euclideanDistance(lastDesc, det.descriptor) < 1e-4){ if (++sameDescN >= 3){ sameDescN = 0; lastDesc = null; restartCamera('frozen picture'); } setTimeout(() => requestAnimationFrame(loop), 60); return; }
       sameDescN = 0; lastDesc = det.descriptor;
       let dist = null; if (matcher){ const m = matcher.findBestMatch(det.descriptor); if (m.label !== 'unknown'){ id = m.label; dist = m.distance; } }
-      if (id && (recentPunch.get(id) || 0) > Date.now()){ if (!current){ const e = empById(id); $('status').textContent = 'Thanks' + (e ? ', ' + e.name.split(' ')[0] : '') + ' — you\'re all set. Next person, please.'; } id = null; ctx.lineWidth = 6; ctx.strokeStyle = '#43c47a'; ctx.strokeRect(b.x,b.y,b.width,b.height); stable = {id:null, n:0}; setTimeout(() => requestAnimationFrame(loop), 60); return; }
+      if (id && (recentPunch.get(id) || 0) > Date.now()){ if (!current){ const e = empById(id), f = e ? ', ' + esc(e.name.split(' ')[0]) : ''; setStatus('Thanks' + f + ' — you\'re all set. Next person, please.', 'Gracias' + f + ' — listo. Siguiente persona, por favor.'); } id = null; ctx.lineWidth = 6; ctx.strokeStyle = '#43c47a'; ctx.strokeRect(b.x,b.y,b.width,b.height); stable = {id:null, n:0}; setTimeout(() => requestAnimationFrame(loop), 60); return; }
       ctx.lineWidth = 6; ctx.strokeStyle = id ? '#43c47a' : '#9fb0bd'; ctx.strokeRect(b.x,b.y,b.width,b.height);
       stable = stable.id === id ? {id, n:stable.n+1} : {id, n:1};
       if (id && stable.n >= 2 && (!current || (current.id !== id && currentMethod === 'face'))){ live = null; startLive(empById(id), dist); }
-      if (!id && !current) $('status').textContent = employees.length ? 'Not recognized yet — face the camera, or pick your name' : 'No employees assigned to this site yet';
-    } else { lastDesc = null; if (!current) $('status').textContent = 'Step up to the camera'; }
+      if (!id && !current){ if (employees.length) setStatus('Not recognized yet — face the camera, or pick your name', 'Aún no lo reconoce — mire a la cámara o elija su nombre'); else setStatus('No employees assigned to this site yet', 'Todavía no hay empleados asignados a este sitio'); }
+    } else { lastDesc = null; if (!current) setStatus('Step up to the camera', 'Acérquese a la cámara'); }
   }
   setTimeout(() => requestAnimationFrame(loop), 60);
 }
@@ -467,7 +479,7 @@ $('pickClose').onclick = () => $('pick').classList.add('hidden');
 $('pickSearch').oninput = e => renderPick(e.target.value);
 function renderPick(q){ q = q.trim().toLowerCase();
   const list = employees.filter(e => e.active && (!q || e.name.toLowerCase().includes(q))).sort((a,b) => a.name.localeCompare(b.name));
-  $('pickList').innerHTML = list.map(e => `<button class="item" data-id="${e.id}">${e.name}<small>#${e.code || ''}</small></button>`).join('') || '<div class="note">No matching names.</div>';
+  $('pickList').innerHTML = list.map(e => `<button class="item" data-id="${e.id}">${e.name}<small>#${e.code || ''}</small></button>`).join('') || '<div class="note">No matching names. / No hay nombres que coincidan.</div>';
   $('pickList').querySelectorAll('.item').forEach(b => b.onclick = () => pickEmployee(b.dataset.id)); }
 function pickEmployee(id){ const emp = empById(id); if (!emp) return;
   const v = $('video'), c = document.createElement('canvas'); c.width = 320; c.height = Math.round(320 * v.videoHeight / v.videoWidth) || 240; c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
@@ -596,15 +608,15 @@ function watchFrames(v){
 async function restartCamera(why){
   if (camBusy) return; camBusy = true; console.warn('camera restart:', why);
   if (current && currentMethod === 'face'){ clearTimeout(idleTimer); resetKiosk(); }
-  $('status').textContent = 'Camera restarting…';
+  setStatus('Camera restarting…', 'Reiniciando la cámara…');
   const now = Date.now(); camRestarts = camRestarts.filter(t => now - t < 10*60000); camRestarts.push(now);
   audit('camera_restart', site && site.id, {why, count: camRestarts.length});
   if (camRestarts.length > 3 && !supOpen){ location.reload(); return; }   // restarts are not helping: start the app fresh (punches are saved on the tablet)
   try { const old = $('video').srcObject; if (old) old.getTracks().forEach(t => t.stop()); $('video').srcObject = null;
     await new Promise(r => setTimeout(r, 500));
     await Promise.race([startCamera(), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 10000))]);
-    if (!current) $('status').textContent = 'Step up to the camera';
-  } catch (e){ console.warn('camera restart failed', e); $('status').textContent = 'Camera problem — tell your supervisor'; if (!supOpen) setTimeout(() => location.reload(), 5000); }
+    if (!current) setStatus('Step up to the camera', 'Acérquese a la cámara');
+  } catch (e){ console.warn('camera restart failed', e); setStatus('Camera problem — tell your supervisor', 'Problema con la cámara — avise a su supervisor'); if (!supOpen) setTimeout(() => location.reload(), 5000); }
   lastDesc = null; sameDescN = 0; camBusy = false;
 }
 let lastPixelChangeAt = Date.now(), pixPrev = null, pixCtx = null;
