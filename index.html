@@ -465,7 +465,7 @@ async function liveStep(v, ctx){
 }
 async function loop(){
   const v = $('video'), c = $('overlay');
-  if (live && !supOpen && !camBusy && v.readyState >= 2){
+  if (live && !supOpen && !camBusy && v.readyState >= 2 && $('pick').classList.contains('hidden')){
     if (c.width !== v.videoWidth){ c.width = v.videoWidth; c.height = v.videoHeight; }
     const ctx = c.getContext('2d'); ctx.clearRect(0,0,c.width,c.height);
     try { await liveStep(v, ctx); } catch (e) { console.warn('turn check', e); }
@@ -493,7 +493,9 @@ async function loop(){
 }
 
 // ================= fallback =================
-$('btnNotMe').onclick = () => { renderPick(''); $('pickSearch').value = ''; $('pick').classList.remove('hidden'); $('pickSearch').focus(); };
+// a manual pick cancels any head-turn check in progress; otherwise the Punch button is silently ignored
+function cancelLive(){ live = null; currentDist = null; currentSnap = null; currentRetry = false; hideArrow(); clearTimeout(idleTimer); }
+$('btnNotMe').onclick = () => { cancelLive(); renderPick(''); $('pickSearch').value = ''; $('pick').classList.remove('hidden'); $('pickSearch').focus(); };
 $('pickClose').onclick = () => $('pick').classList.add('hidden');
 $('pickSearch').oninput = e => renderPick(e.target.value);
 function renderPick(q){ q = q.trim().toLowerCase();
@@ -502,7 +504,7 @@ function renderPick(q){ q = q.trim().toLowerCase();
   $('pickList').querySelectorAll('.item').forEach(b => b.onclick = () => pickEmployee(b.dataset.id)); }
 function pickEmployee(id){ const emp = empById(id); if (!emp) return;
   const v = $('video'), c = document.createElement('canvas'); c.width = 320; c.height = Math.round(320 * v.videoHeight / v.videoWidth) || 240; c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
-  window._fallbackPhoto = c.toDataURL('image/jpeg', 0.6); $('pick').classList.add('hidden'); showEmployee(emp, 'fallback'); }
+  window._fallbackPhoto = c.toDataURL('image/jpeg', 0.6); $('pick').classList.add('hidden'); cancelLive(); stable = {id:null, n:0}; showEmployee(emp, 'fallback'); }
 
 // ================= supervisor entry =================
 let logoTaps = 0, logoTimer = null, pinBuf = '', pinFor = null, supList = [];
