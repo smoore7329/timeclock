@@ -168,7 +168,7 @@
         <button class="btn" id="biLoad">Load week</button>
         <button class="btn ghost" id="biExport" disabled>Download Excel</button>
         <button class="btn ghost" id="biLockBtn">Lock</button></div>
-        <div class="note" style="margin-top:6px">Billed hours = hours worked + paid breaks + adjustments. Regular up to 40 a week, overtime after 40 at 1.5&times; the rate. PTO and guaranteed top-ups are not billed; add them under Other if needed. Salaried staff are left out; subs are billed like everyone else.</div></div>
+        <div class="note" style="margin-top:6px">Billed hours = hours worked + paid breaks + adjustments. Regular up to 40 a week, overtime after 40 at 1.5&times; the rate. PTO and guaranteed top-ups are not billed; add them under Other if needed. Salaried staff bill a flat 40 regular hrs (8 a day Mon&ndash;Fri) at their class rate, with per diem for each day they punched in at this site; subs are billed like everyone else.</div></div>
       <div id="biWeek" class="hidden">
         <div class="banner warn" id="biWarn"></div>
         <div class="kpi" id="biKpi"></div>
@@ -563,7 +563,9 @@ async function computeWeekFor(site, dateVal){
     const dayRes = days.map(dk => { const ps = mine.filter(p => p.work_date === dk); const adj = (adjs||[]).find(a => a.employee_id === e.id && a.work_date === dk) || null;
       const r = Rules.computeDay({dateKey: dk, punches: ps, sched: e.pay_type === 'salary' ? sched : sched, site, adj}); r.punches = ps; r.adjRow = adj; return r; });
     const wk = e.pay_type === 'salary' ? {days:0, worked:0, breaks:0, adj:0, pto:0, guar:0, paid:0, reg:40, ot:0, total:40, otEquiv:40, flagged:0, salary:true, ts2s: Rules.round2(dayRes.reduce((a,d) => a + (d.ts2s||0), 0)), th2s: Rules.round2(dayRes.reduce((a,d) => a + (d.th2s||0), 0))} : Rules.computeWeek(dayRes);
-    return { emp: e, sched, days: dayRes, week: wk };
+    // salaried: the days they punched in at this site (used for billing per diem)
+    const salDays = e.pay_type === 'salary' ? new Set(punches.filter(p => p.employee_id === e.id).map(p => Rules.dayKey(p.ts, site.timezone))) : null;
+    return { emp: e, sched, days: dayRes, week: wk, salDays };
   }).filter(r => { if (r.emp.pay_type === 'salary') return r.emp.site_id === site.id && r.emp.active !== false;
     const worked = r.days.some(d => d.punches.length || d.pto || d.adj || d.ts2s || d.th2s);
     // inactive people only appear if they actually punched (or had time added) this week
@@ -1355,14 +1357,15 @@ async function biReload(fresh){
 // billed hours per day = paid (worked + breaks + adjustments); regular until 40 for the week, then OT at 1.5x. Each day uses the rate in effect that day.
 function billWeek(W, other){
   const R2 = Rules.round2;
-  const rows = W.rows.filter(r => !r.week.salary).map(r => {
-    const cls = r.emp.class_id; let run = 0, regH = 0, otH = 0, regAmt = 0, otAmt = 0, noRateH = 0, pdDays = 0, pdAmt = 0; const rates = new Set();
-    r.days.forEach(d => {
-      const p = d.paid || 0, ot = Math.max(0, run + p - 40) - Math.max(0, run - 40), reg = p - ot; run += p;
+  // salaried: flat 40 hrs (8 a day Mon-Fri) at their class rate, never OT; per diem on days they punched in at this site
+  const rows = W.rows.map(r => {
+    const cls = r.emp.class_id, sal = !!r.week.salary; let run = 0, regH = 0, otH = 0, regAmt = 0, otAmt = 0, noRateH = 0, pdDays = 0, pdAmt = 0; const rates = new Set();
+    r.days.forEach((d, di) => {
+      const p = sal ? (di < 5 ? 8 : 0) : (d.paid || 0), ot = Math.max(0, run + p - 40) - Math.max(0, run - 40), reg = p - ot; run += p;
       regH += reg; otH += ot;
       if (p){ const rt = cls ? rateFor(cls, W.site.id, d.dateKey) : null;
         if (rt == null) noRateH += p; else { regAmt += reg * rt; otAmt += ot * rt * 1.5; rates.add(rt); } }
-      if (d.worked > 0){ pdDays++; pdAmt += perDiemFor(W.site.id, d.dateKey); }
+      if (sal ? (r.salDays && r.salDays.has(d.dateKey)) : d.worked > 0){ pdDays++; pdAmt += perDiemFor(W.site.id, d.dateKey); }
     });
     const o = other.find(x => x.employee_id === r.emp.id) || null, oAmt = o ? +o.amount : 0;
     return { r, cls: clsCode(cls), regH: R2(regH), otH: R2(otH), rates: [...rates], regAmt: R2(regAmt), otAmt: R2(otAmt), noRateH: R2(noRateH), pdDays, pdAmt: R2(pdAmt), other: o, oAmt: R2(oAmt), total: R2(regAmt + otAmt + pdAmt + oAmt) };
@@ -1379,7 +1382,7 @@ function renderBill(){
   $('biWarn').innerHTML = miss.length ? `<div class="grow"><b>${Rules.round2(miss.reduce((a, x) => a + x.noRateH, 0))} hours are not billed because there's no rate:</b> ${miss.map(x => esc(x.r.emp.name) + ' (' + (x.cls ? esc(x.cls) + ' has no rate' : 'no class set') + ')').join(', ')}. Add the rate below, or set their class on the Employees tab, then reload.</div>` : '';
   $('biKpi').innerHTML = `<div><b>${rows.length}</b><span>people billed</span></div><div><b>${S('regH')}</b><span>regular hrs</span></div><div><b>${S('otH')}</b><span>OT hrs</span></div><div><b class="money">${money(S('regAmt') + S('otAmt'))}</b><span>labor</span></div><div><b class="money">${money(S('pdAmt'))}</b><span>per diem</span></div><div><b class="money">${money(S('oAmt'))}</b><span>other</span></div><div><b class="money">${money(S('total'))}</b><span>total to bill</span></div>`;
   $('biTable').innerHTML = `<tr><th>Employee</th><th>Class</th><th class="n">Rate</th><th class="n">Reg hrs</th><th class="n">OT hrs</th><th class="n">Regular $</th><th class="n">OT $</th><th class="n">PD days</th><th class="n">Per diem $</th><th class="n">Other $</th><th class="n">Total $</th></tr>` +
-    rows.map((x, i) => `<tr><td><b>${esc(x.r.emp.name)}</b>${x.r.emp.code ? ' <span class="note">#' + esc(x.r.emp.code) + '</span>' : ''}${subBadge(x.r.emp)}</td><td>${x.cls ? '<span class="code">' + esc(x.cls) + '</span>' : '<span class="badge flag">no class</span>'}</td><td class="n money">${rateTxt(x)}${x.noRateH ? ' <span class="badge flag">no rate</span>' : ''}</td><td class="n">${x.regH || '-'}</td><td class="n">${x.otH ? '<b>' + x.otH + '</b>' : '-'}</td><td class="n money">${money(x.regAmt)}</td><td class="n money">${x.otAmt ? money(x.otAmt) : '-'}</td><td class="n">${x.pdDays || '-'}</td><td class="n money">${x.pdAmt ? money(x.pdAmt) : '-'}</td><td class="n"><button class="btn sm ghost" data-oth="${i}" title="${esc((x.other || {}).note || 'Add travel, PTO or other charges')}">${x.oAmt ? money(x.oAmt) : '+ add'}</button></td><td class="n money"><b>${money(x.total)}</b></td></tr>`).join('') +
+    rows.map((x, i) => `<tr><td><b>${esc(x.r.emp.name)}</b>${x.r.emp.code ? ' <span class="note">#' + esc(x.r.emp.code) + '</span>' : ''}${subBadge(x.r.emp)}${x.r.week.salary ? ' <span class="note">(salary &middot; flat 40)</span>' : ''}</td><td>${x.cls ? '<span class="code">' + esc(x.cls) + '</span>' : '<span class="badge flag">no class</span>'}</td><td class="n money">${rateTxt(x)}${x.noRateH ? ' <span class="badge flag">no rate</span>' : ''}</td><td class="n">${x.regH || '-'}</td><td class="n">${x.otH ? '<b>' + x.otH + '</b>' : '-'}</td><td class="n money">${money(x.regAmt)}</td><td class="n money">${x.otAmt ? money(x.otAmt) : '-'}</td><td class="n">${x.pdDays || '-'}</td><td class="n money">${x.pdAmt ? money(x.pdAmt) : '-'}</td><td class="n"><button class="btn sm ghost" data-oth="${i}" title="${esc((x.other || {}).note || 'Add travel, PTO or other charges')}">${x.oAmt ? money(x.oAmt) : '+ add'}</button></td><td class="n money"><b>${money(x.total)}</b></td></tr>`).join('') +
     `<tr><th>Total</th><th></th><th></th><th class="n">${S('regH')}</th><th class="n">${S('otH')}</th><th class="n money">${money(S('regAmt'))}</th><th class="n money">${money(S('otAmt'))}</th><th class="n">${S('pdDays')}</th><th class="n money">${money(S('pdAmt'))}</th><th class="n money">${money(S('oAmt'))}</th><th class="n money">${money(S('total'))}</th></tr>`;
   $('biTable').querySelectorAll('[data-oth]').forEach(b => b.onclick = () => editOther(BI.rows[+b.dataset.oth]));
   const byC = biByClass(rows);
